@@ -1,0 +1,372 @@
+---
+title: "Adult Pilot Study - MIA"
+output: 
+  html_document:
+    toc: true            # Enable Table of Contents
+    toc_float: true      # Makes the Table of Contents float (optional)
+date: "06-03-2025"
+---
+
+
+
+
+# Function to install/load packages:
+```{r load_packages function, include=FALSE}
+load_packages <- function(packages) {
+  sapply(packages, function(pkg) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  })
+}
+
+packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2", 
+              "tidyverse", "ggplot2", "RColorBrewer", "stringr",
+              "rstatix", "ggpubr", "ggsignif", "FSA",  
+              "readxl", "viridis", "patchwork",  "readr",
+              "ggfortify", "factoextra", "pheatmap",
+              "cowplot","pheatmap","psych","cowplot")
+
+load_packages(packages)
+library(gt)
+getwd()
+
+```
+
+
+# Import data
+```{r, include=FALSE}
+
+cl_df_long <- read_excel("04-antigen_specific_MIA_data.xlsx")
+
+
+```
+
+# How many samples were out-of-range (OOR)?
+```{r, echo=FALSE}
+library(dplyr)
+library(tidyr)
+library(gt)
+
+# Summarize OOR values by target and Sampling_Method using the long-format df
+target_summary <- cl_df_long %>%
+  group_by(target, Sampling_Method) %>%
+  summarise(
+    OOR_High = sum(limits == "OOR >", na.rm = TRUE),
+    OOR_Low  = sum(limits == "OOR <", na.rm = TRUE),
+    total_samples = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    OOR_High_Percent = (OOR_High / total_samples) * 100,
+    OOR_Low_Percent  = (OOR_Low / total_samples) * 100,
+    High_Format = paste0(OOR_High, " (", round(OOR_High_Percent, 1), "%)"),
+    Low_Format  = paste0(OOR_Low, " (", round(OOR_Low_Percent, 1), "%)")
+  )
+
+# Reshape to wider format with Sampling_Method as column groups
+target_table <- target_summary %>%
+  select(target, Sampling_Method, High_Format, Low_Format) %>%
+  pivot_wider(names_from = Sampling_Method, values_from = c(High_Format, Low_Format)) %>%
+  rename_with(~ gsub("High_Format_", "High_", .x), starts_with("High_Format")) %>%
+  rename_with(~ gsub("Low_Format_", "Low_", .x), starts_with("Low_Format"))
+
+# Create the gt table. Adjust the spanner labels as needed.
+gt_table1 <- target_table %>%
+  gt(rowname_col = "target") %>%
+  tab_header(
+    title = md("Out of Range (OOR) Values (Count and Percentage)")
+  ) %>%
+  tab_spanner(
+    label = md("**MTS**"),  
+    columns = c(High_MTS_Professional, Low_MTS_Professional, High_MTS_Self, Low_MTS_Self)
+  ) %>%
+  tab_spanner(
+    label = md("**NPS**"),  
+    columns = c(High_NPS_Professional, Low_NPS_Professional)
+  ) %>%
+  tab_spanner(
+    label = md("**MLF**"),  
+    columns = c(High_MLF_Professional, Low_MLF_Professional, High_MLF_Self, Low_MLF_Self)
+  ) %>%
+  tab_spanner(
+    label = md("**OPS**"),  
+    columns = c(High_OPS_Professional, Low_OPS_Professional)
+  ) %>%
+  tab_spanner(
+    label = md("**Saliva**"),  
+    columns = c(High_Saliva_Professional, Low_Saliva_Professional, High_Saliva_Self, Low_Saliva_Self)
+  ) %>%
+  cols_label(
+    High_MTS_Self = "Self (OOR >)",     Low_MTS_Self = "Self (OOR <)",
+    High_MTS_Professional = "Professional (OOR >)", Low_MTS_Professional = "Professional (OOR <)",
+    High_NPS_Professional = "Professional (OOR >)",   Low_NPS_Professional = "Professional (OOR <)",
+    High_MLF_Self = "Self (OOR >)",      Low_MLF_Self = "Self (OOR <)",
+    High_MLF_Professional = "Professional (OOR >)",    Low_MLF_Professional = "Professional (OOR <)",
+    High_OPS_Professional = "Professional (OOR >)",    Low_OPS_Professional = "Professional (OOR <)",
+    High_Saliva_Professional = "Professional (OOR >)", Low_Saliva_Professional = "Professional (OOR <)",
+    High_Saliva_Self = "Self (OOR >)",   Low_Saliva_Self = "Self (OOR <)"
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 14
+  )
+
+# Print the table
+gt_table1
+# save the table
+gtsave(gt_table1, "MIA_censoring_table.html")
+```
+
+# Data processing (remove samples that fell OOR)
+```{r}
+cl_df_long %>%
+  filter(!is.na(concentration)) %>%        # keep only samples with data
+  group_by(Sampling_Method, target) %>%        # group by site and analyte
+  summarise(n_samples = n(), .groups = "drop")
+
+```
+
+
+
+# Statistics (Prof)
+```{r}
+library(rstatix)
+pro_df <- cl_df_long %>%
+  filter(Sampling_Strategy == "Professional", !is.na(concentration))
+
+pro_df <- pro_df %>%
+  mutate(log_conc = log10(concentration))
+
+set.seed(123)  # For reproducibility
+
+# Step 1: We do this just for MTS and MLF since they have two samples taken (i.e. from the left and right nostrils), Because these were not statistically different, we take one sample randomly to ensure complete cases
+mts_mlf_collapsed <- pro_df %>%
+  filter(Sample_Type %in% c("MTS", "MLF")) %>%
+  group_by(ID, target, Sample_Type) %>%
+  slice_sample(n = 1) %>%
+  ungroup()
+
+
+other_samples <- pro_df %>%
+  filter(!Sample_Type %in% c("MTS", "MLF"))
+
+collapsed_df <- bind_rows(mts_mlf_collapsed, other_samples)
+collapsed_df <- collapsed_df %>%
+  mutate(log_conc = log10(concentration)) # log10 transformation
+# transform data to wide format
+wide_df <- collapsed_df  %>%
+  select(ID, Sample_Type, target, log_conc) %>%
+  pivot_wider(names_from = Sample_Type, values_from = log_conc)
+
+
+collapsed_df %>%
+  filter(!is.na(concentration)) %>%
+  count(target, Sample_Type, name = "n_samples")
+library(purrr)
+# the pairs that we will apply the test
+sample_pairs <- list(
+  c("NPS", "MLF"),
+  c("NPS", "MTS"),
+  c("NPS", "OPS"),
+  c("NPS", "Saliva")
+)
+
+stat_results <- map_dfr(sample_pairs, function(pair) {
+  wide_df %>%
+    group_by(target) %>%
+    filter(!is.na(.data[[pair[1]]]) & !is.na(.data[[pair[2]]])) %>%
+    summarise(
+      p = wilcox.test(.data[[pair[1]]], .data[[pair[2]]], paired = TRUE, exact = FALSE)$p.value,
+      group1 = pair[1],
+      group2 = pair[2],
+      .groups = "drop"
+    )
+}) %>%
+  mutate(p.adj = p.adjust(p, method = "bonferroni"),
+         p.adj.signif = case_when(
+           p.adj < 0.001 ~ "***",
+           p.adj < 0.01 ~ "**",
+           p.adj < 0.05 ~ "*",
+           TRUE ~ "ns"
+         ),
+         y.position = 5.5  # adjust as needed
+  )
+
+# save results
+#writexl::write_xlsx(stat_results, "Specific-Ab-Wilcox-results.xlsx")
+```
+
+
+
+# Preparations for visualizing the results
+```{r, fig.width=10, fig.height=6, echo=FALSE}
+# Define custom colors for our Sample Types
+custom_colors <- c("NPS" = "#A2D2DF", 
+                   "MTS" = "#F6EFBD",       
+                   "MLF" = "#FFBD73",
+                   "OPS" = "#BC7C7C",
+                   "Saliva" = "#8ABFA3")
+
+collapsed_df.nona <- collapsed_df %>% 
+  filter(!is.na(concentration)) # removed missing values
+
+```
+# Visualize the Wilcoxon Paired test results & concentrations
+```{r, fig.width=10, fig.height=8}
+
+
+# Define the function that processes one target:
+plot_target <- function(target_name, data, sample_types = c("NPS", "MTS", "MLF", "OPS", "Saliva")) {
+  
+  # 1. Filter the data for the given target
+  df_target <- data %>% filter(target == target_name)
+  
+  # For non-"PT" targets, find common IDs and filter to balanced data.
+  # For "PT", keep all samples.
+  if(target_name != "PT") {
+    common_ids <- df_target %>% 
+      filter(Sample_Type %in% sample_types) %>% 
+      group_by(ID) %>% 
+      summarise(n = n_distinct(Sample_Type)) %>% 
+      filter(n == length(sample_types)) %>% 
+      pull(ID)
+    
+    df_balanced <- df_target %>%
+      filter(ID %in% common_ids, Sample_Type %in% sample_types) %>%
+      mutate(log_conc = log10(concentration))
+  } else {
+    # For target "PT", use all available data and create log10 values.
+    df_balanced <- df_target %>% 
+      mutate(log_conc = log10(concentration))
+  }
+  
+  # Base plot: boxplot with jittered points
+  p <- ggplot(df_balanced, aes(x = Sample_Type, y = log_conc, fill = Sample_Type)) +
+    geom_boxplot(alpha = 0.5, outlier.shape = NA) +
+    geom_point(alpha = 0.4, position = position_jitter(width = 0.15)) +
+    labs(
+  title = paste("Target:", target_name),
+  y = ifelse(target_name == "PT", 
+             "Log10 Concentration (IU/mL)", 
+             "Log10 Concentration (AU/mL)"), x=NULL
+) +
+    scale_fill_manual(values = c("NPS" = "#A2D2DF", 
+                                 "MTS" = "#F6EFBD",       
+                                 "MLF" = "#FFBD73",
+                                 "OPS" = "#BC7C7C",
+                                 "Saliva" = "#8ABFA3")) +
+    theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+   
+  
+  # If the target is not "PT", add paired Wilcoxon test comparisons.
+  if(target_name != "PT"){
+    my_comparisons <- list(c("NPS", "MTS"), 
+                           c("NPS", "MLF"),
+                           c("NPS", "OPS"),
+                           c("NPS", "Saliva"))
+    
+    p <- p + stat_compare_means(comparisons = my_comparisons,
+                                method = "wilcox.test",
+                                paired = TRUE,
+                                label = "p.signif",
+                                tip.length = 0.01)
+  }
+  
+  return(p)
+}
+
+
+# Get all distinct targets:
+targets <- unique(collapsed_df.nona$target)
+
+# Generate a list of plots, one per target
+plot_list <- lapply(targets, function(t) plot_target(t, collapsed_df.nona))
+
+# Combine all plots into one figure with one common legend at the bottom
+combined_plot <- ggarrange(plotlist = plot_list,
+                           ncol = length(plot_list),
+                           common.legend = TRUE,
+                           legend = "bottom")
+# Display the combined plot
+print(combined_plot)
+
+# Save the plot
+ggsave(
+  filename = "Target-specific-Ab-plot-prof.tiff",
+  plot = combined_plot,
+  device = "tiff",
+  width = 12,      # width in inches
+  height = 9,      # height in inches
+  dpi = 300        # dots per inch for good resolution
+)
+
+
+```
+# Concentration ranges (per sample type and target)
+```{r, echo=FALSE}
+library(stringr)
+library(gt)
+
+# Summarize the data
+summary_table <- cl_df_long %>%
+  group_by(target, Sampling_Method) %>%  # Group by Target and Result (SARS, Pertussis, etc.)
+  summarise(
+    Min_Concentration = min(concentration, na.rm = TRUE),
+    Max_Concentration = max(concentration, na.rm = TRUE),
+    Unit = first(unit)  # Assuming Unit is the same within groups
+  ) %>%
+  ungroup()
+
+
+
+library(dplyr)
+library(gt)
+library(stringr)
+
+# Extract Sampling Method from Sampling_Method
+summary_table <- summary_table %>%
+  mutate(
+    `Sample Type` = str_extract(Sampling_Method, "^[^_]+"),
+    `Sampling Strategy` = str_extract(Sampling_Method, "(?<=_)[^_]+$")  # Extracts second part after "_"# Extracts MLF, MTS, etc.
+  )
+
+# Create GT table with dynamic row grouping
+gt_table <- summary_table %>%
+  select(`Sample Type`,`Sampling Strategy`, target, Min_Concentration, Max_Concentration, Unit) %>%
+  arrange(`Sampling Strategy`, target) %>%
+  gt(rowname_col = "Target") %>%
+  tab_header(title = "Concentration Ranges per Sampling Method") %>%
+  # Dynamically create row groups for each sampling method
+  tab_row_group(label = md("**MLF**"), rows = `Sample Type` == "MLF") %>%
+  tab_row_group(label = md("**MTS**"), rows = `Sample Type` == "MTS") %>%
+  tab_row_group(label = md("**NPS**"), rows = `Sample Type` == "NPS") %>%
+  tab_row_group(label = md("**OPS**"), rows = `Sample Type` == "OPS") %>%
+  tab_row_group(label = md("**Saliva**"), rows = `Sample Type` == "Saliva") %>%
+  fmt_number(
+    columns = c(Min_Concentration, Max_Concentration),
+    decimals = 2
+  ) %>%
+  cols_label(
+    target = "Antigen",
+    Min_Concentration = "Min Conc.",
+    Max_Concentration = "Max Conc.",
+    Unit = "Unit"
+  )
+
+# Display GT table
+gt_table
+
+# save table
+# gtsave(gt_table, "MIA_table.html")
+
+```
+

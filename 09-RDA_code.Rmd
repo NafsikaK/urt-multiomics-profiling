@@ -1,0 +1,695 @@
+---
+title: "RDA"
+output: html_document
+date: "2025-09-18"
+---
+
+
+```{r Load Packages, include=FALSE}
+# Function to install/load packages:
+
+load_packages <- function(packages) {
+  sapply(packages, function(pkg) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  })
+}
+
+packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2", 
+              "tidyverse", "ggplot2", "RColorBrewer", "stringr","scales", 
+              "rstatix", "ggpubr", "ggsignif", "FSA",  
+              "readxl", "viridis", "patchwork",   
+              "ggfortify", "factoextra", "pheatmap",
+              "cowplot","coin","psych","cowplot",
+              "phyloseq","microbiome","plyr","hrbrthemes",
+              "RColorBrewer","readr", "decontam", "microbiomeutilities",
+              "DECIPHER", "ape","phangorn", "tibble","utils","MOFA2","microViz",
+              "vegan","mixOmics","data.table")
+
+load_packages(packages)
+# library(microViz)
+# library(vegan)
+# library(mixOmics)
+```
+
+#  Load datasets
+```{r load ps, message=TRUE}
+
+# Load phyloseq object (microbiome):
+ps <- readRDS("07-ps.for.multiomics.rds")
+
+ps.df <- data.frame(sample_data(ps)) #make dataframe 
+
+table(ps.df$Sample_Type) #count number of sample types
+table(ps.df$Sampling_Method) #count number of sampling methods
+
+ps #print phyloseq object (7171 taxa in 308 samples)
+#-----------------------------------------------------
+
+# Import only LegendPlex data:
+lgnd <- read_excel("02-LegendPlex_data.xlsx")
+library(dplyr)
+lgnd %>%
+  distinct(SampleID, Sample_Type, Analytes) %>%        # one row per sample
+  dplyr::count(Analytes, Sample_Type, name = "n_samples")
+#-----------------------------------------------------
+
+# Import total Abs data:
+total_abs <- read_excel("01-Luminex_Total_Abs_Data.xlsx")
+total_abs %>%
+  distinct(Description, Sample_Type, Analyte) %>%        # one row per sample
+  dplyr::count(Analyte, Sample_Type, name = "n_samples")
+
+
+#-----------------------------------------------------
+
+# Import RespiFinder (multiplex PCR) data:
+
+respifinder <- read_excel("04-antigen_specific_MIA_data.xlsx")
+respifinder <- respifinder %>%
+  mutate(
+    Pathogen_group = case_when(
+      Result %in% c("SARS-CoV2", "Rhino/Entero", "Boca", "Influenza A") ~ "Virus",
+      Result %in% c("C.Pneu", "B.Pert") ~ "Bacterium",
+      is.na(Result) ~ "Negative"
+    )
+  )
+
+resp_flags <- respifinder %>%
+  distinct(SampleID, Pathogen_group) %>%   # one row per sample × group
+  mutate(
+    Virus_pos = Pathogen_group == "Virus",
+    Bact_pos  = Pathogen_group == "Bacterium",
+    Any_pos   = Pathogen_group != "Negative"
+  ) 
+```
+
+
+
+# Data cleanup 
+We will only use Professionally collected samples for the integrated analysis. 
+
+```{r data-cleanup}
+
+ps.prof <- phyloseq::subset_samples(ps, Sampling_Strategy == "Professional")
+ps.prof.df <- data.frame(sample_data(ps.prof))
+
+lgnd.prof <- lgnd %>% filter( Sampling_Strategy == "Professional")
+lgnd.prof <- lgnd.prof %>% mutate(log10_conc = log10(concentration.est))
+# lgnd.prof <- lgnd.prof %>% mutate(log_conc = log(concentration.est))
+lgnd.prof <- lgnd.prof %>%
+  mutate(Sample_Type = recode(Sample_Type, "Mid-turbinate swab" = "MTS"))
+lgnd.prof <- lgnd.prof %>%
+  mutate(Sample_Type = recode(Sample_Type, "Nasopharyngeal swab" = "NPS"))
+lgnd.prof <- lgnd.prof %>%
+  mutate(Sample_Type = recode(Sample_Type, "Oropharyngeal swab" = "OPS"))
+
+total_abs.prof <- total_abs %>% filter( Sampling_Strategy == "Professional")
+
+# Function to replace "OOR <" values with half of the minimum or half of LLOQ if all values are NA
+replace_missing_with_min <- function(x, lloq) {
+  min_val <- min(x, na.rm = TRUE)
+  if (is.finite(min_val)) {
+    return((1/2) * min_val)
+  } else {
+    return((1/2) * lloq)  # Use half of LLOQ if all values are NA
+  }
+}
+
+# Function to replace "OOR >" values with the maximum x2 concentration in range
+replace_missing_with_max <- function(x) {
+  max_val <- max(x, na.rm = TRUE)
+  if (is.finite(max_val)) {
+    return(max_val*2)
+  } else {
+    return(NA)  # If all values are NA, return NA or another desired fallback
+  }
+}
+
+# Apply the functions per isotype and sample type
+total_abs.prof <- total_abs.prof %>%
+  group_by(Analyte, Sample_Type) %>%
+  mutate(
+    concentration = case_when(
+      is.na(Conc_in_Range) & Notes == "OOR <" ~ replace_missing_with_min(Conc_in_Range, LLOQ),
+      is.na(Conc_in_Range) & Notes == "OOR >" ~ replace_missing_with_max(Conc_in_Range),
+      TRUE ~ Conc_in_Range
+    )
+  ) %>%
+  ungroup()
+
+#  Calculate log10 of the new concentration column
+total_abs.prof <- total_abs.prof %>%
+  mutate(log10_conc = log10(concentration))
+```
+
+
+# Build metadata
+```{r}
+# 1. Build metadata starting from LegendPlex professional
+resp_flags_1 <- resp_flags %>% subset(select=c(SampleID, Virus_pos, Bact_pos, Any_pos))
+meta <- lgnd.prof %>%
+  distinct(SampleID, Sample_Type, ID, Biological_Sex, Age_Range, Nostril) %>%
+  left_join(resp_flags_1, by = "SampleID")
+
+# check
+dim(meta)
+table(meta$Sample_Type)
+
+  # MLF    MTS    NPS    OPS Saliva 
+  #   88     88     44     44     40 
+
+```
+
+```{r}
+total_abs.prof <- total_abs.prof %>%
+  dplyr::rename(SampleID = Description)
+
+```
+
+# IDs check
+```{r}
+
+ids_microbe <- sample_names(ps.prof)   # from phyloseq
+ids_cytokine <- unique(lgnd.prof$SampleID)
+ids_igs <- unique(total_abs.prof$SampleID)
+
+# overlap with meta
+table(meta$SampleID %in% ids_microbe)
+table(meta$SampleID %in% ids_cytokine)
+table(meta$SampleID %in% ids_igs)
+
+```
+
+```{r}
+setdiff(meta$SampleID, ids_microbe)   # in meta but not microbiome
+setdiff(meta$SampleID, ids_cytokine)  # in meta but not cytokines
+setdiff(meta$SampleID, ids_igs)       # in meta but not Igs
+
+```
+
+# Find the shared IDs
+```{r}
+integration_ids <- Reduce(intersect, list(
+  meta$SampleID,
+  ids_microbe,
+  ids_cytokine,
+  ids_igs
+))
+
+length(integration_ids)  # should be 264
+```
+
+
+# Subset to these IDs (meta)
+```{r}
+meta_sub <- meta %>% 
+  filter(SampleID %in% integration_ids)
+
+nrow(meta_sub)   #  264
+
+table(meta_sub$Sample_Type)
+
+# MLF    MTS    NPS    OPS Saliva 
+#     69     80     36     44     35 
+meta_sub <- meta_sub %>%
+  mutate(SampleID_site = paste(ID, Sample_Type, sep="_"))
+
+
+```
+## microbiome
+```{r}
+ps.sub <- phyloseq::subset_samples(ps.prof, sample_identifier %in% integration_ids)
+
+# sanity check
+nsamples(ps.sub)   # 264
+```
+
+# legendplex
+```{r}
+lgnd.sub <- lgnd.prof %>%
+  filter(SampleID %in% integration_ids) %>%
+  subset(select=c(SampleID, Analytes, log10_conc))
+
+# wide format (rows = samples, cols = analytes)
+cyto.mat <- tidyr::pivot_wider(lgnd.sub,
+  names_from = Analytes,
+  values_from = log10_conc
+)
+
+# reorder rows to match meta_sub
+cyto.mat <- cyto.mat[match(meta_sub$SampleID, cyto.mat$SampleID), ]
+```
+
+# total Igs
+```{r}
+igs.sub <- total_abs.prof %>%
+  filter(SampleID %in% integration_ids) %>%
+  subset(select=c(SampleID, Analyte, log10_conc))
+
+igs.mat <- tidyr::pivot_wider(igs.sub,
+  names_from = Analyte,
+  values_from = log10_conc
+) 
+
+# reorder rows to match meta_sub
+igs.mat <- igs.mat[match(meta_sub$SampleID, igs.mat$SampleID), ]
+```
+# collapse legendplex
+```{r}
+# start from your long lgnd.sub (SampleID, Analytes, log10_conc)
+cyto.mat.collapsed <- lgnd.sub %>%
+  dplyr::left_join(meta_sub %>% dplyr::select(SampleID, SampleID_site), by = "SampleID") %>%
+  dplyr::group_by(SampleID_site, Analytes) %>%
+  dplyr::summarise(log10_conc = mean(log10_conc, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_wider(names_from = Analytes, values_from = log10_conc)
+
+# matrix + scaling
+X_cytokine <- as.data.frame(cyto.mat.collapsed)
+rownames(X_cytokine) <- X_cytokine$SampleID_site
+X_cytokine <- as.matrix(X_cytokine[ , -1, drop = FALSE])
+X_cytokine <- scale(X_cytokine)
+```
+
+# collapse total antibodies
+```{r}
+igs.mat.collapsed <- igs.sub %>%
+  dplyr::left_join(meta_sub %>% dplyr::select(SampleID, SampleID_site), by = "SampleID") %>%
+  dplyr::group_by(SampleID_site, Analyte) %>%
+  dplyr::summarise(log10_conc = mean(log10_conc, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_wider(names_from = Analyte, values_from = log10_conc)
+
+
+
+X_igs <- as.data.frame(igs.mat.collapsed)
+rownames(X_igs) <- X_igs$SampleID_site
+X_igs <- as.matrix(X_igs[ , -1, drop = FALSE])
+X_igs <- scale(X_igs)
+```
+# collapse microbiome & CLRS
+```{r}
+library(compositions)
+library(dplyr)
+
+# 1. Aggregate microbiome to Genus level
+ps.prof.genus <- tax_glom(ps.sub, "Genus", NArm = TRUE)
+
+# 2. Relative abundance (%)
+ps.prof.rel <- transform_sample_counts(ps.prof.genus, function(OTU) OTU/sum(OTU) * 100)
+
+# 3. Convert to matrix
+microbe_data <- as.data.frame(otu_table(ps.prof.rel))
+if(taxa_are_rows(ps.prof.rel)) {
+  microbe_data <- t(microbe_data)
+}
+
+# 4. Replace column names with Genus names
+genus_names <- as.character(tax_table(ps.prof.rel)[, "Genus"])
+colnames(microbe_data) <- genus_names
+
+# 5. Filter genera by prevalence (>10%)
+prevalence_filter <- function(x, threshold = 0.1) mean(x > 0) > threshold
+filtered_microbe <- microbe_data[, apply(microbe_data, 2, prevalence_filter)]
+
+# 6. CLR transform
+microbe_data_clr <- as.data.frame(clr(filtered_microbe))
+
+# 7. Add SampleID
+microbe_data_clr$SampleID <- rownames(microbe_data_clr)
+
+# 8. Collapse left/right nostrils → subject × site
+microbe_data_clr <- microbe_data_clr %>%
+  left_join(meta_sub %>% subset(select=c(SampleID, SampleID_site)),
+            by = "SampleID") %>%
+  group_by(SampleID_site) %>%
+  summarise_at(vars(-SampleID), mean, na.rm=TRUE) %>%
+  ungroup()
+
+# 9. Final matrix 
+X_microbe <- scale(as.matrix(microbe_data_clr[,-1]))
+rownames(X_microbe) <- microbe_data_clr$SampleID_site
+
+```
+
+```{r}
+common_ids <- Reduce(intersect, list(rownames(X_microbe), rownames(X_cytokine), rownames(X_igs)))
+
+# Build collapsed metadata
+meta_collapsed <- meta_sub %>%
+  dplyr::distinct(ID, Sample_Type, Biological_Sex, Age_Range, 
+                  Virus_pos, Bact_pos, Any_pos, SampleID_site) %>%
+  dplyr::filter(SampleID_site %in% common_ids) %>%
+  dplyr::arrange(match(SampleID_site, common_ids))
+
+meta_collapsed <- meta_collapsed[match(rownames(X_microbe), meta_collapsed$SampleID_site), ]
+
+```
+
+
+# check alignment
+```{r}
+
+X_microbe  <- X_microbe [common_ids, , drop = FALSE]
+X_cytokine <- X_cytokine[common_ids, , drop = FALSE]
+X_igs      <- X_igs     [common_ids, , drop = FALSE]
+
+meta_collapsed <- meta_sub %>%
+  dplyr::distinct(ID, Sample_Type, Biological_Sex, Age_Range, Virus_pos, Bact_pos, Any_pos, SampleID_site) %>%
+  dplyr::filter(SampleID_site %in% common_ids) %>%
+  dplyr::arrange(match(SampleID_site, common_ids))
+
+stopifnot(identical(rownames(X_microbe), rownames(X_cytokine)))
+stopifnot(identical(rownames(X_microbe), rownames(X_igs)))
+meta_collapsed <- meta_collapsed[match(rownames(X_microbe), meta_collapsed$SampleID_site), ]
+
+# now check again
+stopifnot(identical(meta_collapsed$SampleID_site, rownames(X_microbe)))
+# setdiff(rownames(X_microbe), meta_collapsed$SampleID_site)
+# setdiff(meta_collapsed$SampleID_site, rownames(X_microbe))
+```
+
+```{r}
+table(meta_collapsed$Sample_Type)
+table_input <- table(meta_collapsed$Sample_Type)
+table_input <- as.data.frame(table_input)
+#writexl::write_xlsx(table_input,"input_samples_mofa.xlsx")
+
+clean_names <- function(x) {
+  x <- gsub("α", "alpha", x)
+  x <- gsub("γ", "gamma", x)
+  x <- gsub("λ", "lambda", x)
+  x <- gsub("[^A-Za-z0-9_]", "_", x)  # replace any other weird chars with underscore
+  x
+}
+
+colnames(X_cytokine) <- clean_names(colnames(X_cytokine))
+
+```
+
+
+# RDA
+
+
+## collapse microbiome 
+```{r}
+library(compositions)
+library(compositions)
+library(dplyr)
+
+# 1. Aggregate microbiome to Genus level
+ps.prof.genus <- tax_glom(ps.sub, "Genus", NArm = TRUE)
+
+# 2. Relative abundance (%)
+ps.prof.rel <- transform_sample_counts(ps.prof.genus, function(OTU) OTU/sum(OTU) * 100)
+
+# 3. Convert to matrix
+microbe_data <- as.data.frame(otu_table(ps.prof.rel))
+if(taxa_are_rows(ps.prof.rel)) {
+  microbe_data <- t(microbe_data)
+}
+
+# 4. Replace column names with Genus names
+genus_names <- as.character(tax_table(ps.prof.rel)[, "Genus"])
+colnames(microbe_data) <- genus_names
+
+# 5. Filter genera by prevalence (>10%)
+prevalence_filter <- function(x, threshold = 0.1) mean(x > 0) > threshold
+filtered_microbe <- microbe_data[, apply(microbe_data, 2, prevalence_filter)]
+
+filtered_microbe <- as.data.frame(filtered_microbe)
+# 6. Hellinger transform (recommended for RDA)
+# microbe_data_hell <- decostand(filtered_microbe, method = "hellinger")
+# microbe_data_hell <- as.data.frame(microbe_data_hell)
+
+# 7. Add SampleID
+filtered_microbe$SampleID <- rownames(filtered_microbe)
+
+# 8. Collapse left/right nostrils → subject × site
+filtered_microbe <- filtered_microbe %>%
+  left_join(meta_sub %>% subset(select=c(SampleID, SampleID_site)),
+            by = "SampleID") %>%
+  group_by(SampleID_site) %>%
+  summarise_at(vars(-SampleID), mean, na.rm=TRUE) %>%
+  ungroup()
+
+# 9. Final matrix 
+X_microbe <- as.matrix(filtered_microbe[,-1])
+rownames(X_microbe) <- filtered_microbe$SampleID_site
+
+```
+
+```{r}
+# matrix + scaling
+X_cytokine <- as.data.frame(cyto.mat.collapsed)
+rownames(X_cytokine) <- X_cytokine$SampleID_site
+X_cytokine <- as.matrix(X_cytokine[ , -1, drop = FALSE])
+X_cytokine <- scale(X_cytokine)
+
+X_igs <- as.data.frame(igs.mat.collapsed)
+rownames(X_igs) <- X_igs$SampleID_site
+X_igs <- as.matrix(X_igs[ , -1, drop = FALSE])
+X_igs <- scale(X_igs)
+```
+
+## Hellinger transformation
+```{r}
+X_igs_df<- as.data.frame(X_igs) %>%
+  tibble::rownames_to_column("SampleID_site")
+X_igs_df <- X_igs_df[,-5]
+
+igs <- colnames(X_igs)
+cytos <- colnames(X_cytokine)
+bacs <- colnames(X_microbe)
+
+# transformation
+X_microbe <- decostand(X_microbe, method = "hellinger")
+
+X_microbe_df<- as.data.frame(X_microbe) %>%
+  tibble::rownames_to_column("SampleID_site")
+
+X_cytokine_df <- as.data.frame(X_cytokine)%>%  tibble::rownames_to_column("SampleID_site")
+# Combine assays
+dat_rda <- X_cytokine_df %>%
+  left_join(X_microbe_df, by="SampleID_site") %>%
+  left_join(X_igs_df, by="SampleID_site") %>%
+  left_join(meta_collapsed, by="SampleID_site") 
+dim(dat_rda)
+dat_rda <- dat_rda %>% filter(!is.na(IgM))
+
+
+
+```
+
+
+
+```{r}
+custom_colors <- c("NPS" = "#A2D2DF", 
+                   "MTS" = "bisque3",       
+                   "MLF" = "#FFBD73",
+                   "OPS" = "#BC7C7C",
+                   "Saliva" = "#8ABFA3")
+```
+
+
+# RDA (FINAL)
+```{r rda-v2, fig.width=11, fig.height=8}
+library(vegan)
+library(ggplot2)
+library(ggrepel)
+library(permute)
+library(dplyr)
+
+# microbes: Hellinger (on relative abundances)
+X_microbe <- dat_rda[, bacs]
+# immune + Igs: z-score (already log scaled)
+X_immune  <- dat_rda[, cytos, drop=FALSE]
+X_igs     <- dat_rda[, igs,   drop=FALSE]
+
+# (Optional) block-weight so each domain contributes similarly
+bw <- function(M) M / sqrt(sum(apply(M, 2, var)))
+X_features <- cbind(bw(X_microbe), bw(X_immune), bw(X_igs))
+
+# # ---- PERMANOVA: do niches differ in joint space? ----
+# dist_features <- vegdist(X_features, method = "euclidean")
+set.seed(123)
+# perm <- how(blocks = dat_rda$ID)
+# permanova <- adonis2(dist_features ~ Sample_Type + Biological_Sex + Age_Range + Any_pos,
+#                      data = dat_rda, permutations = perm, by = "margin")
+# 
+# permanova_df <- as.data.frame(permanova)
+
+
+
+#writexl::write_xlsx(permanova_df, "RDA_PERMANOVA_result.xlsx")
+# ---- RDA: all domains ~ Sample_Type | covariates ----
+dat_rda <- dat_rda[!is.na(dat_rda$Any_pos), ]
+mod_rda <- rda(X_features ~ Sample_Type + Condition(ID + Biological_Sex + Age_Range + Any_pos),
+               data = dat_rda)
+
+
+# Global model test
+anova(mod_rda, permutations = 999)
+
+# Each predictor (Sample_Type vs covariates you conditioned on)
+mod_rda_all <- rda(X_features ~ Sample_Type + ID + Biological_Sex + Age_Range + Any_pos,
+                   data = dat_rda)
+anova(mod_rda_all, by = "term", permutations = 999)
+
+# Each canonical axis
+anova(mod_rda, by = "axis", permutations = 999)
+
+library(writexl)
+
+# ---- Permutation tests ----
+res_global <- anova(mod_rda, permutations = 999)
+res_terms  <- anova(mod_rda_all, by = "term", permutations = 999)
+res_axes   <- anova(mod_rda, by = "axis", permutations = 999)
+
+df_global <- as.data.frame(res_global)
+df_terms  <- as.data.frame(res_terms)
+df_axes   <- as.data.frame(res_axes)
+
+# ---- Variance explained ----
+Rsq_adj <- RsquareAdj(mod_rda)
+imp <- summary(mod_rda)$concont$importance
+
+df_variance <- data.frame(
+  Metric = c("Total constrained (%)", "R2", "Adj R2", "RDA1 (%)", "RDA2 (%)"),
+  Value  = c(
+    round(100 * mod_rda$CCA$tot.chi / mod_rda$tot.chi, 2),
+    round(Rsq_adj$r.squared, 3),
+    round(Rsq_adj$adj.r.squared, 3),
+    round(100 * imp[2,1], 1),
+    round(100 * imp[2,2], 1)
+  )
+)
+
+# ---- Write all results into one Excel workbook ----
+# write_xlsx(
+#   list(
+#     Global   = df_global,
+#     Terms    = df_terms,
+#     Axes     = df_axes,
+#     Variance = df_variance
+#   ),
+#   "RDA_results.xlsx"
+# )
+
+# Stats
+Rsq_adj <- Rsq_adj$adj.r.squared
+imp <- summary(mod_rda)$concont$importance
+axis1 <- round(100*imp[2,1], 1); axis2 <- round(100*imp[2,2], 1)
+total_constrained <- round(100*mod_rda$CCA$tot.chi / mod_rda$tot.chi, 1)
+
+
+# vif.cca(mod_rda)
+# ---- Scores ----
+sites <- as.data.frame(scores(mod_rda, display = "sites", scaling = 2)) %>%
+  mutate(Sample_Type = dat_rda$Sample_Type)
+
+# Species scores = loadings for EVERY feature in Y (microbes + immune + Igs)
+sp <- as.data.frame(scores(mod_rda, display = "species", scaling = 2)) %>%
+  mutate(var = rownames(.),
+         domain = case_when(
+           var %in% colnames(X_microbe) ~ "Microbe",
+           var %in% colnames(X_immune)  ~ "Cytokine",
+           var %in% colnames(X_igs)     ~ "Ig",
+           TRUE ~ "Other"
+         ))
+
+# pick top drivers per domain by vector length
+sp$len <- sqrt(sp$RDA1^2 + sp$RDA2^2)
+top_microbes <- sp %>% filter(domain=="Microbe")  %>% arrange(dplyr::desc(len)) %>% slice_head(n=10)
+top_cyt      <- sp %>% filter(domain=="Cytokine")%>% arrange(dplyr::desc(len)) %>% slice_head(n=6)
+top_igs      <- sp %>% filter(domain=="Ig")       %>% arrange(dplyr::desc(len)) %>% slice_head(n=3)
+# remove IgA, IgG, IgM from the plotted loadings
+top_igs_plot <- top_igs 
+top_microbes_plot <- top_microbes 
+top_all <- bind_rows(top_microbes_plot, top_cyt, top_igs_plot)
+
+# ---- Hulls ----
+hulls <- do.call(rbind, lapply(split(sites, sites$Sample_Type), function(df) df[chull(df$RDA1, df$RDA2), ]))
+
+
+
+# rescale loadings to stroke thickness
+top_all$stroke <- scales::rescale(top_all$len, to = c(0.5, 2.5))
+library(ggnewscale)
+```
+
+```{r, fig.width=11, fig.height=8}
+rda_plot <- ggplot() +
+  # sample points (colored by Sample Type)
+  geom_point(data = sites, aes(RDA1, RDA2, color = Sample_Type), size = 3, alpha = 0.5) +
+  
+  # convex hulls = single constant fill
+  geom_polygon(data = hulls, aes(RDA1, RDA2, group = Sample_Type),
+               fill = "grey85", alpha = 0.2, color = "grey75",   # subtle outline
+  linewidth = 0.2, linetype="dashed" ) +
+  scale_color_manual(name = "Sample Type", values = custom_colors,
+                     guide = guide_legend(order = 1)) +
+
+  # reset scales before domain layers
+  ggnewscale::new_scale_color() +
+  ggnewscale::new_scale_fill() +
+
+  # drivers (Domain × len × fill)
+  geom_point(data = top_all,
+             aes(RDA1, RDA2, shape = domain, size = len, fill = domain),
+             color = "black") +
+
+  # labels
+  geom_text_repel(data = subset(top_all, domain == "Microbe"),
+                  aes(RDA1, RDA2, label = var),
+                  size = 5, fontface = "italic", max.overlaps = 10,
+                  box.padding = 0.6, point.padding = 0.5,
+                  segment.color = "grey60", show.legend = FALSE) +
+  geom_text_repel(data = subset(top_all, domain != "Microbe"),
+                  aes(RDA1, RDA2, label = var),
+                  size = 5, box.padding = 0.65, point.padding = 0.6,
+                  segment.color = "grey60", show.legend = FALSE) +
+
+  # Domain (merged legend: shape + fill both named "Domain", same order)
+  scale_shape_manual(
+    name  = "Domain",
+    values = c(Microbe = 24, Cytokine = 22, Ig = 23),   # filled triangle, diamond, square
+    guide  = guide_legend(order = 2, override.aes = list(size = 6))
+  ) +
+  scale_fill_manual(
+    name  = "Domain",
+    values = c(Microbe = "grey20", Ig = "grey70", Cytokine = "white"),
+    guide  = guide_legend(order = 2)  # no size override here; shape guide handles size
+  ) +
+
+  # Contribution (len) as discrete-looking sizes; legend shows squares
+  scale_size_continuous(
+    name   = "Contribution",
+    range  = c(3, 9),
+    breaks = c(0.4, 0.7, 1.0, 1.3),
+    labels = c("0.4", "0.7", "1.0", "1.3"),
+    guide  = guide_legend(order = 3,
+               override.aes = list(shape = 22, fill = "grey70", color = "black"))
+  ) +
+
+  labs(
+    x = paste0("RDA1 (", axis1, "%)"),
+    y = paste0("RDA2 (", axis2, "%)"),
+    subtitle = paste0("Adj. R² = ", round(Rsq_adj, 2),
+                      ", ANOVA F = 56.1, p < 0.01 ")
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title = element_text(size = 16),
+    axis.text  = element_text(size = 14),
+    plot.subtitle = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    legend.text  = element_text(size = 13),
+    legend.key.size = unit(1.1, "cm")
+  )
+
+rda_plot
+```

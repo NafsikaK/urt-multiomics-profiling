@@ -1,0 +1,1559 @@
+---
+title: "Luminex: Total IgA/IgG/IgM Assay Data Analysis"
+output: 
+  html_document:
+    toc: true            # Enable Table of Contents
+    toc_float: true      # Makes the Table of Contents float (optional)
+date: "22-10-2024"
+---
+
+
+
+
+# Function to install/load packages:
+```{r load_packages function, include=FALSE}
+load_packages <- function(packages) {
+  sapply(packages, function(pkg) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  })
+}
+
+packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2", 
+              "tidyverse", "ggplot2", "RColorBrewer", "stringr",
+              "rstatix", "ggpubr", "ggsignif", "FSA",  
+              "readxl", "viridis", "patchwork",  "readr",
+              "ggfortify", "factoextra", "pheatmap",
+              "cowplot","pheatmap","psych","cowplot")
+
+load_packages(packages)
+
+getwd()
+
+```
+
+# Import total antibody data:
+```{r}
+mydf <- read_excel("datasets_final/01-Luminex_Total_Abs_Data.xlsx", 
+    col_types = c("text", "text", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "text", "text", "text", 
+        "text", "text", "text", "text", "text", 
+        "text", "numeric", "numeric", "numeric", 
+        "text", "numeric"))
+```
+
+# Handling of out-of-range (OOR) values 
+```{r}
+# Summarize out-of-range (OOR) Luminex values by target and sampling method
+# Input: mydf with columns Analyte, Notes, Sampling_Method
+# Output: gt summary table with OOR high/low counts and percentages
+
+library(dplyr)
+library(tidyr)
+library(gt)
+
+# 1) start from your existing df
+df_long <- mydf %>%
+  # 1a) tag OORs
+  mutate(target=Analyte,
+    limits = case_when(
+      str_detect(Notes, "OOR <") ~ "OOR <",
+      str_detect(Notes, "OOR >") ~ "OOR >",
+      TRUE                       ~ NA_character_
+    ),
+    
+  )
+
+# Summarize OOR values by target and Sampling_Method using the long-format df
+target_summary <- df_long %>%
+  group_by(target, Sampling_Method) %>%
+  summarise(
+    OOR_High = sum(limits == "OOR >", na.rm = TRUE),
+    OOR_Low  = sum(limits == "OOR <", na.rm = TRUE),
+    total_samples = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    OOR_High_Percent = (OOR_High / total_samples) * 100,
+    OOR_Low_Percent  = (OOR_Low / total_samples) * 100,
+    High_Format = paste0(OOR_High, " (", round(OOR_High_Percent, 1), "%)"),
+    Low_Format  = paste0(OOR_Low, " (", round(OOR_Low_Percent, 1), "%)")
+  )
+
+# Reshape to wider format with Sampling_Method as column groups
+target_table <- target_summary %>%
+  select(target, Sampling_Method, High_Format, Low_Format) %>%
+  pivot_wider(names_from = Sampling_Method, values_from = c(High_Format, Low_Format)) %>%
+  rename_with(~ gsub("High_Format_", "High_", .x), starts_with("High_Format")) %>%
+  rename_with(~ gsub("Low_Format_", "Low_", .x), starts_with("Low_Format"))
+
+# Create the gt table. 
+gt_table <- target_table %>%
+  gt(rowname_col = "target") %>%
+  tab_header(
+    title = md("Out of Range (OOR) Values (Count and Percentage)")
+  ) %>%
+  tab_spanner(
+    label = md("**MTS**"),  
+    columns = c(High_MTS_Professional, Low_MTS_Professional, High_MTS_Self, Low_MTS_Self)
+  ) %>%
+  tab_spanner(
+    label = md("**NPS**"),  
+    columns = c(High_NPS_Professional, Low_NPS_Professional)
+  ) %>%
+  tab_spanner(
+    label = md("**MLF**"),  
+    columns = c(High_MLF_Professional, Low_MLF_Professional, High_MLF_Self, Low_MLF_Self)
+  ) %>%
+  tab_spanner(
+    label = md("**OPS**"),  
+    columns = c(High_OPS_Professional, Low_OPS_Professional)
+  ) %>%
+  tab_spanner(
+    label = md("**Saliva**"),  
+    columns = c(High_Saliva_Professional, Low_Saliva_Professional, High_Saliva_Self, Low_Saliva_Self)
+  ) %>%
+  cols_label(
+    High_MTS_Self = "Self (OOR >)",     Low_MTS_Self = "Self (OOR <)",
+    High_MTS_Professional = "Professional (OOR >)", Low_MTS_Professional = "Professional (OOR <)",
+    High_NPS_Professional = "Professional (OOR >)",   Low_NPS_Professional = "Professional (OOR <)",
+    High_MLF_Self = "Self (OOR >)",      Low_MLF_Self = "Self (OOR <)",
+    High_MLF_Professional = "Professional (OOR >)",    Low_MLF_Professional = "Professional (OOR <)",
+    High_OPS_Professional = "Professional (OOR >)",    Low_OPS_Professional = "Professional (OOR <)",
+    High_Saliva_Professional = "Professional (OOR >)", Low_Saliva_Professional = "Professional (OOR <)",
+    High_Saliva_Self = "Self (OOR >)",   Low_Saliva_Self = "Self (OOR <)"
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 14
+  )
+
+# Print the table
+gt_table
+
+# Optionally, save the table:
+# gtsave(gt_table, "Luminex_Total_Abs_Samples_OOR.html")
+#gtsave(gt_table, "Luminex_Total_Abs_Samples_OOR.docx")
+```
+
+
+# Make subset data for each isotype:
+```{r Total Abs, include=FALSE}
+#----- Subsets--------
+df_A <- mydf %>% 
+  filter(Analyte == "IgA")
+
+df_G <- mydf %>% 
+  filter(Analyte == "IgG")
+
+df_M <- mydf %>% 
+  filter(Analyte == "IgM")
+
+```
+
+# Explore concentrations (before OOR substitutions)
+```{r, Main Concentration Plot, warning=FALSE, fig.width=11, fig.height=8, echo=FALSE}
+
+#Subset samples that were collected by professionals:
+prof_df <- mydf %>% 
+  filter(Sampling_Strategy == "Professional")
+
+# Count the number of samples that were OOR (above or below limits of detection) for each isotype
+count_a <- prof_df %>% filter(Analyte == "IgA") %>%  # IgA
+  filter(Notes == "OOR >" | Notes == "OOR <")
+
+count_g <- prof_df %>% filter(Analyte == "IgG") %>%  # IgG
+  filter(Notes == "OOR >" | Notes == "OOR <")
+
+count_m <- prof_df %>% filter(Analyte == "IgM") %>%  # IgM
+  filter(Notes == "OOR >" | Notes == "OOR <")
+
+#head(count_a)
+
+##-----Professional----
+###-------IgA----------
+# Count for "OOR >" (above upper limits of quantitation)
+count_OOR_greater_A <- count_a %>%
+  filter(Notes == "OOR >") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_greater = n(), .groups = 'drop')
+
+# Count for "OOR <" (below lower limits of detection)
+count_OOR_less_A <- count_a %>%
+  filter(Notes == "OOR <") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_less = n(), .groups = 'drop')
+
+# Merge the two counts into one dataframe for total IgA
+counts_A <- full_join(count_OOR_greater_A, count_OOR_less_A, by = "Sample_Type")
+
+###-------IgG----------
+# Count for "OOR >" (above upper limits of quantitation)
+count_OOR_greater_G <- count_g %>%
+  filter(Notes == "OOR >") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_greater = n(), .groups = 'drop')
+
+# Count for "OOR <" (below lower limits of detection)
+count_OOR_less_G <- count_g %>%
+  filter(Notes == "OOR <") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_less = n(), .groups = 'drop')
+
+# Merge the two counts into one dataframe for total IgG
+counts_G <- full_join(count_OOR_greater_G, count_OOR_less_G, by = "Sample_Type")
+
+###-------IgM----------
+# Count for "OOR >" (above upper limits of quantitation)
+count_OOR_greater_M <- count_m %>%
+  filter(Notes == "OOR >") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_greater = n(), .groups = 'drop')
+
+# Count for "OOR <" (below lower limits of detection)
+count_OOR_less_M <- count_m %>%
+  filter(Notes == "OOR <") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_less = n(), .groups = 'drop')
+
+# Merge the two counts into one dataframe for total IgM
+counts_M <- full_join(count_OOR_greater_M, count_OOR_less_M, by = "Sample_Type")
+
+
+#-------Self-collected samples-----------------
+#Subset samples that were self-collected by a subset of participants:
+#
+self_df <- mydf %>% 
+  filter(Sampling_Strategy == "Self")
+
+# Count the number of samples that were OOR (above or below limits of detection) for each isotype
+s_count_a <- self_df %>% filter(Analyte == "IgA") %>%  # IgA
+  filter(Notes == "OOR >" | Notes == "OOR <")
+
+s_count_g <- self_df %>% filter(Analyte == "IgG") %>%  # IgG
+  filter(Notes == "OOR >" | Notes == "OOR <")
+
+s_count_m <- self_df %>% filter(Analyte == "IgM") %>%  # IgM
+  filter(Notes == "OOR >" | Notes == "OOR <")
+
+#head(count_a)
+
+##-----Self-collected OORs----
+###-------IgA----------
+# Count for "OOR >" (above upper limits of quantitation)
+s_count_OOR_greater_A <- s_count_a %>%
+  filter(Notes == "OOR >") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_greater = n(), .groups = 'drop')
+
+# Count for "OOR <" (below lower limits of detection)
+s_count_OOR_less_A <- s_count_a %>%
+  filter(Notes == "OOR <") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_less = n(), .groups = 'drop')
+
+# Merge the two counts into one dataframe for total IgA
+s_counts_A <- full_join(s_count_OOR_greater_A, s_count_OOR_less_A, by = "Sample_Type")
+
+###-------IgG----------
+# Count for "OOR >" (above upper limits of quantitation)
+s_count_OOR_greater_G <- s_count_g %>%
+  filter(Notes == "OOR >") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_greater = n(), .groups = 'drop')
+
+# Count for "OOR <" (below lower limits of detection)
+s_count_OOR_less_G <- s_count_g %>%
+  filter(Notes == "OOR <") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_less = n(), .groups = 'drop')
+
+# Merge the two counts into one dataframe for total IgG
+s_counts_G <- full_join(s_count_OOR_greater_G, s_count_OOR_less_G, by = "Sample_Type")
+
+###-------IgM----------
+# Count for "OOR >" (above upper limits of quantitation)
+s_count_OOR_greater_M <- s_count_m %>%
+  filter(Notes == "OOR >") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_greater = n(), .groups = 'drop')
+
+# Count for "OOR <" (below lower limits of detection)
+s_count_OOR_less_M <- s_count_m %>%
+  filter(Notes == "OOR <") %>%
+  group_by(Sample_Type) %>%
+  summarise(Count_OOR_less = n(), .groups = 'drop')
+
+# Merge the two counts into one dataframe for total IgM
+s_count_m <- full_join(s_count_OOR_greater_M, s_count_OOR_less_M, by = "Sample_Type")
+
+
+#------------Here, we don't substitute OOR sample values so we will annotate these in the following plot----
+n_distinct(prof_df$ID) #44 but some were OOR
+n_distinct(self_df$ID) #16 but some were OOR
+
+# Define custom colors for our Sample Types
+custom_colors <- c("NPS" = "#A2D2DF", 
+                   "MTS" = "#F6EFBD",       
+                   "MLF" = "#FFBD73",
+                   "OPS" = "#BC7C7C",
+                   "Saliva" = "#8ABFA3")
+
+main_plot_2 <- ggplot(mydf, aes(x = Sampling_Method, y = log10.conc,fill = Sample_Type)) +
+  geom_boxplot(aes(group = Sampling_Method), alpha = 0.5) +  # Boxplot for each analyte
+  geom_point(alpha = 0.4) +  # Points with slight dodge
+  facet_wrap(~Analyte, ncol = 3) +
+  scale_fill_manual(values = custom_colors)+
+  labs(x = "Sampling Method", y = "Concentration (log10)",
+       title = "Concentration of Analytes per Sample Type",
+       subtitle="Professionally Collected (N = 44)",
+       fill="Sample Type") +
+  theme_bw() + theme(axis.text.x = element_text(angle=45, hjust = 1))
+
+#main_plot_2
+
+# We annotate per sample type the OOR samples accordingly for total IgA:
+annotation_data <- data.frame(
+  Sampling_Method = c("MLF_Professional","MLF_Self", "MTS_Professional",
+                  "OPS_Professional", "Saliva_Professional","Saliva_Self"),
+  Sample_Type = c("MLF","MLF","MTS",
+                  "OPS","Saliva","Saliva"),
+  log10.conc = c(3.7, 4.5, 3.1, 1.9, 1, 4.5),
+  label = c("OOR > (N = 11)", "OOR > (N = 5)","OOR > (N = 1)\nOOR < (N = 3)", "OOR < (N = 11)",
+             "OOR > (N = 7)\nOOR < (N = 1)","OOR > (N = 1)"),
+  Analyte = c("IgA", "IgA", "IgA", "IgA", "IgA","IgA")
+)
+
+main_plot_n2 <- main_plot_2 +
+  geom_text(data = annotation_data, aes(x = Sampling_Method, y = log10.conc, label = label),
+            size = 2.2, hjust = 0.53, vjust = 0.75)
+#main_plot_n2
+
+# We annotate per sample type the OOR samples accordingly for total IgG:
+annotation_data_g <- data.frame(
+  Sampling_Method = c("MLF_Professional", "OPS_Professional"),
+  log10.conc = c(1.2, 0.1),
+  Sample_Type=c("MLF","OPS"),
+  label = c("OOR < (N = 1)", "OOR < (N = 19)"),
+  Analyte = c("IgG", "IgG")
+)
+
+main_plot3 <- main_plot_n2 +
+  geom_text(data = annotation_data_g, aes(x = Sampling_Method, y = log10.conc, label = label),
+            size = 2.2, hjust = 0.4, vjust = -1)
+# main_plot3
+
+# We annotate per sample type the OOR samples accordingly for total IgM:
+annotation_data_m <- data.frame(
+  Sampling_Method = c("MLF_Professional","MTS_Professional" ,"OPS_Professional","Saliva_Professional"),
+  log10.conc = c(1.001, 1.02, 0.8,1.6),
+  Sample_Type=c("MLF","MTS","OPS","Saliva"),
+  label = c("OOR > (N = 1)\nOOR < (N = 1)", "OOR < (N = 1)", "OOR < (N = 8)","OOR < (N = 1)"),
+  Analyte = c("IgM","IgM" ,"IgM","IgM")
+)
+
+main_plot4 <- main_plot3 +
+  geom_text(data = annotation_data_m, aes(x = Sampling_Method, y = log10.conc, label = label),
+            size = 2.2, hjust = 0.4, vjust = -1)
+
+# This is the final boxplot, showing sample types' total antibody concentrations for each isotype and the number of corresponding OOR samples accordingly: 
+main_plot4
+
+# Optionally, save this plot:
+ # ggsave(filename = "Main_Concentrations_Boxplot_29_10_2024.tiff"
+ #        , plot = main_plot4, width = 12, height = 6 ,dpi = 300,
+ #        device="tiff")
+```
+
+
+# Visualize concentrations (before OOR substitutions) only for professionally collected samples
+```{r}
+# Define custom colors for your Sample Types
+custom_colors <- c("NPS" = "#A2D2DF", 
+                   "MTS" = "#F6EFBD",       
+                   "MLF" = "#FFBD73",
+                   "OPS" = "#BC7C7C",
+                   "Saliva" = "#8ABFA3")
+
+my_df_prof <- mydf %>% filter(Sampling_Strategy == "Professional")
+
+main_plot_00 <- ggplot(my_df_prof, aes(x = Sample_Type, y = log10.conc,fill = Sample_Type)) +
+  geom_boxplot(aes(group = Sample_Type), alpha = 0.5) +  # Boxplot for each analyte
+  geom_point(alpha = 0.4) +  # Points with slight dodge
+  facet_wrap(~Analyte, ncol = 3) +
+  scale_fill_manual(values = custom_colors)+
+  labs(x = "Sampling Type", y = "Concentration (log10)",
+       title = "Concentration of Analytes per Sample Type",
+       subtitle="Professionally Collected (N = 44)",
+       fill="Sample Type") +
+  theme_bw() + theme(axis.text.x = element_text(angle=45, hjust = 1))
+main_plot_00
+
+# We annotate per sample type the OOR samples accordingly for total IgA:
+annotation_data <- data.frame(
+  Sample_Type = c("MLF","MTS",
+                  "OPS","Saliva"),
+  log10.conc = c(3.7, 3.1, 1.9, 1),
+  label = c("OOR > (N = 11)","OOR > (N = 1)\nOOR < (N = 3)", "OOR < (N = 11)",
+             "OOR > (N = 7)\nOOR < (N = 1)"),
+  Analyte = c("IgA",  "IgA", "IgA", "IgA")
+)
+
+main_plot_01 <- main_plot_00 +
+  geom_text(data = annotation_data, aes(x = Sample_Type, y = log10.conc, label = label),
+            size = 2.2, hjust = 0.53, vjust = 0.75)
+
+# We annotate per sample type the OOR samples accordingly for total IgG:
+annotation_data_g <- data.frame(
+  log10.conc = c(1.2, 0.1),
+  Sample_Type=c("MLF","OPS"),
+  label = c("OOR < (N = 1)", "OOR < (N = 19)"),
+  Analyte = c("IgG", "IgG")
+)
+
+main_plot_02 <- main_plot_01 +
+  geom_text(data = annotation_data_g, aes(x = Sample_Type, y = log10.conc, label = label),
+            size = 2.2, hjust = 0.4, vjust = -1)
+
+# We annotate per sample type the OOR samples accordingly for total IgM:
+annotation_data_m <- data.frame(
+  log10.conc = c(1.001, 1.02, 0.8,1.6),
+  Sample_Type=c("MLF","MTS","OPS","Saliva"),
+  label = c("OOR > (N = 1)\nOOR < (N = 1)", "OOR < (N = 1)", "OOR < (N = 8)","OOR < (N = 1)"),
+  Analyte = c("IgM","IgM" ,"IgM","IgM")
+)
+
+main_plot_03 <- main_plot_02 +
+  geom_text(data = annotation_data_m, aes(x = Sample_Type, y = log10.conc, label = label),
+            size = 2.2, hjust = 0.4, vjust = -1)
+main_plot_03
+
+# Optionally, save this plot:
+# ggsave(filename = "Luminex_Main_Concentrations_Boxplot_28_04_2025.tiff"
+#        , plot = main_plot_03, width = 12, height = 6 ,dpi = 300,
+#        device="tiff", compression="lzw")
+
+```
+
+
+# Explore data after substitution:
+Here we substitute sample values that were OOR as such:
+For samples that were **<OOR**: 1/2 the minimum of the concentration with respect to the measured total antibody.
+For samples that were **>OOR**: ULOQ or the maximum value with respect to the measured total antibody. 
+```{r Substitutions}
+
+# Function to replace "OOR <" values with half of the minimum or half of LLOQ if all values are NA
+replace_missing_with_min <- function(x, lloq) {
+  min_val <- min(x, na.rm = TRUE)
+  if (is.finite(min_val)) {
+    return((1/2) * min_val)
+  } else {
+    return((1/2) * lloq)  # Use half of LLOQ if all values are NA
+  }
+}
+
+# Function to replace "OOR >" values with the maximum x2 concentration in range
+replace_missing_with_max <- function(x) {
+  max_val <- max(x, na.rm = TRUE)
+  if (is.finite(max_val)) {
+    return(max_val*2)
+  } else {
+    return(NA)  # If all values are NA, return NA or another desired fallback
+  }
+}
+
+# Apply the functions per isotype and sample type
+mydf2 <- mydf %>%
+  group_by(Analyte, Sample_Type) %>%
+  mutate(
+    concentration = case_when(
+      is.na(Conc_in_Range) & Notes == "OOR <" ~ replace_missing_with_min(Conc_in_Range, LLOQ),
+      is.na(Conc_in_Range) & Notes == "OOR >" ~ replace_missing_with_max(Conc_in_Range),
+      TRUE ~ Conc_in_Range
+    )
+  ) %>%
+  ungroup()
+
+#  Calculate log10 of the new concentration column
+mydf2 <- mydf2 %>%
+  mutate(log10.new = log10(concentration))
+
+na_rows <- mydf2 %>%
+  filter(is.na(concentration)) # no NAs
+
+# Check for complete IDs with all five Sample Types in professional sampling strategy
+prof_df2 <- mydf2 %>% 
+  filter(Sampling_Strategy == "Professional")
+
+id_with_all_samples <- prof_df2 %>%
+  group_by(ID) %>%
+  summarize(num_sample_types = n_distinct(Sample_Type)) %>%
+  filter(num_sample_types == 5) %>%
+  pull(ID)  #033 not complete
+
+unique(id_with_all_samples)
+
+```
+
+
+# Concentration boxplot with substitution
+```{r Plot with subs, fig.width=10, fig.height=8}
+ggplot(mydf2, aes(x = Sampling_Method, y = log10.new,fill = Sample_Type)) +
+  geom_boxplot(aes(group = Sampling_Method), alpha = 0.5) +  # Boxplot for each analyte
+  geom_point(alpha = 0.4) +  # Points with slight dodge
+  facet_wrap(~Analyte, ncol = 3) +
+  scale_fill_manual(values = custom_colors)+
+  labs(x = "Sampling Method", y = "Concentration (log10)",
+       title = "Concentration of Analytes per Sample Type",
+       subtitle="Professionally Collected (N = 44)",
+       fill="Sample Type") +
+  theme_bw() + theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.background = element_rect(fill = "transparent", color = NA),    # Transparent panel background
+    plot.background = element_rect(fill = "transparent", color = NA),     # Transparent plot background
+    legend.background = element_rect(fill = "transparent"),               # Transparent legend background
+    strip.background = element_rect(fill = "transparent", color = NA)     # Transparent facet strip background
+  )
+
+
+
+# Only professional
+my_df_prof <- mydf2 %>%  filter(Sampling_Strategy == "Professional")
+plot_01 <- ggplot(my_df_prof, aes(x = Sample_Type, y = log10.new,fill = Sample_Type)) +
+  geom_boxplot(aes(group = Sample_Type), alpha = 0.5) +  # Boxplot for each analyte
+  geom_point(alpha = 0.4) +  # Points with slight dodge
+  facet_wrap(~Analyte, ncol = 3) +
+  scale_fill_manual(values = custom_colors)+
+  labs(x = "Sample Type", y = "Concentration (log10)",
+       title = "Concentration of Total Antibodies per Sample Type",
+       subtitle="Professionally Collected (N = 44)",
+       fill="Sample Type") +
+  theme_bw() + theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.background = element_rect(fill = "transparent", color = NA),    # Transparent panel background
+    plot.background = element_rect(fill = "transparent", color = NA),     # Transparent plot background
+    legend.background = element_rect(fill = "transparent"),               # Transparent legend background
+    strip.background = element_rect(fill = "transparent", color = NA)     # Transparent facet strip background
+  )
+
+plot_01
+
+# Save plot:
+# ggsave(filename = "Luminex_Main_Concentrations_Boxplot_with_subs_28_04_2025.tiff"
+#        , plot = plot_01, width = 12, height = 6 ,dpi = 300,
+#        device="tiff", compression="lzw")
+```
+
+# Make the data into wide format 
+```{r Wide df, warning=FALSE}
+
+#----- Subsets--------
+#For each isotype, we make subset dataframes:
+df_A <- mydf2 %>% 
+  filter(Analyte == "IgA") #IgA
+df_G <- mydf2 %>% 
+  filter(Analyte == "IgG") # IgG
+
+df_M <- mydf2 %>% 
+  filter(Analyte == "IgM") #IgM
+
+#-------------------------
+# Find `Description` values in each dataframe
+desc_A <- df_A$Description
+desc_G <- df_G$Description
+desc_M <- df_M$Description
+
+missing_in_A <- setdiff(desc_G, desc_A)  # Descriptions in IgG but not in IgA
+missing_in_G <- setdiff(desc_A, desc_G)  # Descriptions in IgA but not in IgG
+missing_in_M_A <- setdiff(desc_A, desc_M)  # Descriptions in IgA but not in IgM
+missing_in_M_G <- setdiff(desc_G, desc_M)  # Descriptions in IgG but not in IgM
+
+missing_in_M_A #because we are missing these samples, we will have to filter them out to ensure complete cases
+# Combine results in a list for clarity
+missing_descriptions <- list(
+  "Missing in IgA" = missing_in_A,
+  "Missing in IgG" = missing_in_G,
+  "Missing in IgM from IgA" = missing_in_M_A,
+  "Missing in IgM from IgG" = missing_in_M_G
+)
+#-------------------------------
+small_df <- prof_df2 %>% 
+  subset(select=c(Description,Analyte,Sample_Type,ID,log10.new))
+
+small_df_filt <- small_df %>% group_by(Analyte) %>% 
+  filter(!Description %in% missing_in_M_A)
+
+# Finally, we make the wide format dataframe for professionally collected samples:
+wide_df <- small_df_filt %>% 
+  pivot_wider(names_from = Analyte, values_from = log10.new)
+
+#-------------------------------
+# We repeat the process for self-collected samples:
+self_df <-mydf2 %>% 
+  filter(Sampling_Strategy == "Self")
+
+small_df_self <- self_df %>% 
+  subset(select=c(Description,Analyte,Sample_Type,ID, log10.new))
+
+small_df_filt_self <- small_df_self %>% group_by(Analyte) %>% 
+  filter(!Description %in% missing_in_M_A)
+
+# We make the self-collected wide dataframe
+wide_df_self <- small_df_filt_self %>% 
+  pivot_wider(names_from = Analyte, values_from = log10.new)
+```
+
+
+# Comparing the Nostrils
+```{r nostrils, warning=FALSE}
+# Here we want to compare left and right nostril samples, which were taken from MTS and MLF samples.
+#Statistical Significance per Analyte: Nostrils comparison----
+mlf_prof <- mydf2 %>% 
+  filter(Sample_Type == "MLF") %>% 
+  filter(Sampling_Strategy == "Professional")
+
+mts_prof <- mydf2 %>% 
+  filter(Sample_Type == "MTS") %>% 
+  filter(Sampling_Strategy == "Professional")
+
+# We make a wide format dataframe for the MLf samples:
+wide_data_nostril <- mlf_prof %>% select(Nostril,ID,log10.new,Analyte) %>% 
+  pivot_wider(names_from = Nostril, 
+              values_from = log10.new)
+
+# We make an empty list to store the results of the Wilcoxon paired test 
+MLF_wilcoxon_res <- list()
+analytes <- unique(my_df_nofollowups$Analyte)
+#Define significance:
+significance <- function(p){
+  if(p<0.001){
+    return("***")
+  } else if (p<0.01) {
+    return("**")
+  } else if(p<0.05){
+    return("*")
+  } else {
+    return("ns")
+  }
+}
+#For-loops
+for(analyte in analytes){
+  subset_data <- wide_data_nostril %>% 
+    filter(Analyte == analyte)
+  test_result <- wilcox.test(subset_data$Left, subset_data$Right, paired=TRUE)
+  MLF_wilcoxon_res[[analyte]] <- data.frame(
+    Analyte=analyte,
+    W=test_result$statistic,
+    p_value=test_result$p.value,
+    pvals_adjusted <- p.adjust(test_result$p.value, method = "BH")
+  )
+  
+}
+
+# Empty list to store p-values
+p_values <- c()
+
+# First loop to calculate test results
+for(analyte in analytes){
+  subset_data <- wide_data_nostril %>% 
+    filter(Analyte == analyte)
+  test_result <- wilcox.test(subset_data$Left, subset_data$Right, paired=TRUE)
+  MLF_wilcoxon_res[[analyte]] <- data.frame(
+    Analyte = analyte,
+    W = test_result$statistic,
+    p_value = test_result$p.value
+  )
+  p_values <- c(p_values, test_result$p.value)
+}
+
+# Adjust p-values for multiple testing (Benjamini-Hochberg)
+adjusted_p_values <- p.adjust(p_values, method = "BH")  
+
+# Add adjusted p-values and significance back to the results
+for(i in seq_along(analytes)){
+  MLF_wilcoxon_res[[analytes[i]]]$adjusted_p_value <- adjusted_p_values[i]
+  MLF_wilcoxon_res[[analytes[i]]]$significance <- significance(adjusted_p_values[i])
+}
+
+
+#Combine results into one df:
+MLF_Nostril_Wilcoxon_Res <- bind_rows(MLF_wilcoxon_res)
+
+# We make a wide format dataframe for the MTS samples:
+wide_data_nostril_mts <- mts_prof %>% select(Nostril,ID,log10.new,Analyte) %>% 
+  pivot_wider(names_from = Nostril, 
+              values_from = log10.new)
+
+p_values <- c()
+
+MTS_wilcoxon_res <- list()
+#For-loops
+for(analyte in analytes){
+  subset_data <- wide_data_nostril_mts %>% 
+    filter(Analyte == analyte)
+  test_result <- wilcox.test(subset_data$Left, subset_data$Right, paired=TRUE)
+  MTS_wilcoxon_res[[analyte]] <- data.frame(
+    Analyte=analyte,
+    W=test_result$statistic,
+    p_value=test_result$p.value,
+    significance=significance(test_result$p.value)
+  )
+  p_values <- c(p_values, test_result$p.value)
+}
+# Adjust p-values for multiple testing (Benjamini-Hochberg)
+adjusted_p_values_mts <- p.adjust(p_values, method = "BH")  
+
+# Add adjusted p-values and significance back to the results
+for(i in seq_along(analytes)){
+  MTS_wilcoxon_res[[analytes[i]]]$adjusted_p_value <- adjusted_p_values_mts[i]
+  MTS_wilcoxon_res[[analytes[i]]]$significance <- significance(adjusted_p_values_mts[i])
+}
+
+#Combine results into one MTS df:
+
+MTS_Nostril_Wilcoxon_Res <- bind_rows(MTS_wilcoxon_res)
+
+```
+
+## Nostrils Plots (paired test version)
+```{r,warning=FALSE, fig.width=10, fig.height=8}
+# We manually annotate per total isotype:
+annotations_sign <- data.frame(
+  Analyte = c("IgA", "IgG", "IgM"),
+  Nostril = c(1.5, 1.5, 1.5),  
+  y_pos = c(6,5.8,4.8),  
+  label=c("*", "**", "***")) 
+#MLF
+paired_nostril_mlf_plot <- ggplot(mlf_prof, aes(x=Nostril, y=log10.new, fill=Nostril)) +
+  geom_boxplot(position = position_dodge(width = 0.75), alpha= 0.5) +
+  geom_point(alpha=0.5)  +
+  facet_wrap(~Analyte, scales="free") +geom_text(data = annotations_sign, aes(x=Nostril, y=y_pos, label=label),
+            vjust=-0.5, size=6, inherit.aes = FALSE)+
+  geom_line(aes(group=ID), alpha=0.3) +
+  labs(title = "Nasosorption Strips (MLF)",
+       subtitle = "Nostril Comparison",
+       y="Concentration (log10)",
+       x="Nostril") +
+  theme_bw() 
+paired_nostril_mlf_plot
+
+#MTS
+paired_nostril_mts_plot <- ggplot(mts_prof, aes(x=Nostril, y=log10.conc, fill=Nostril))+
+  geom_boxplot(position = position_dodge(width = 0.75), alpha= 0.5)+
+  geom_point(alpha=0.5)+
+  facet_wrap(~Analyte, scales="free")+
+  geom_line(aes(group=ID), alpha=0.3)+
+  labs(title = "Mid-Turbinate Nasal Swab",
+       subtitle = "Nostril Comparison",
+       y="Concentration (log10)",
+       x="Nostril")+
+  theme_bw()
+paired_nostril_mts_plot
+```
+
+## Nostrils: Ratios Comparison
+We calculated within-participant log10 ratios between left and right nostrils as log10(Left) - log10(Right), equivalent to log10(Left / Right). These values were used to visualize directional differences between nostrils and tested against zero using a Wilcoxon signed-rank test. 
+```{r,warning=FALSE}
+# Calculate log ratio for each analyte for MLF samples:
+wide_data_nostril <- wide_data_nostril %>%
+  mutate(log_ratio = Left - Right)
+
+# Initialize empty list to store results
+MLF_wilcoxon_res_ratios <- list()
+
+# Loop through each analyte and perform the Wilcoxon signed-rank test on log ratios
+for(analyte in analytes){
+  subset_data <- wide_data_nostril %>% 
+    filter(Analyte == analyte)
+  
+  # Perform Wilcoxon test on the log ratio
+  test_result <- wilcox.test(subset_data$log_ratio, mu = 0)
+  
+  # Save results
+  MLF_wilcoxon_res_ratios[[analyte]] <- data.frame(
+    Analyte = analyte,
+    W = test_result$statistic,
+    p_value = test_result$p.value
+  )
+}
+
+# Adjust p-values for multiple testing
+p_values <- sapply(MLF_wilcoxon_res_ratios, function(x) x$p_value)
+adjusted_p_values <- p.adjust(p_values, method = "BH")
+
+# Add adjusted p-values to results
+for(i in seq_along(analytes)){
+  MLF_wilcoxon_res_ratios[[analytes[i]]]$adjusted_p_value <- adjusted_p_values[i]
+  MLF_wilcoxon_res_ratios[[analytes[i]]]$significance <- significance(adjusted_p_values[i])
+}
+
+# Combine results into one data frame
+MLF_Nostril_Wilcoxon_Res_Ratios <- bind_rows(MLF_wilcoxon_res_ratios)
+
+# Calculate log ratio for MTS (Mid-turbinate swab) between Left and Right nostrils
+wide_data_nostril_mts <- wide_data_nostril_mts %>%
+  mutate(log_ratio = Left - Right)
+
+# You can inspect the first few rows to verify
+head(wide_data_nostril_mts)
+
+# Initialize empty list to store results
+MTS_wilcoxon_res_ratios <- list()
+
+# Loop through each analyte and perform the Wilcoxon signed-rank test on log ratios
+for(analyte in analytes){
+  subset_data <- wide_data_nostril_mts %>% 
+    filter(Analyte == analyte)
+  
+  # Perform Wilcoxon test on the log ratio
+  test_result <- wilcox.test(subset_data$log_ratio, mu = 0)
+  
+  # Save results
+  MTS_wilcoxon_res_ratios[[analyte]] <- data.frame(
+    Analyte = analyte,
+    W = test_result$statistic,
+    p_value = test_result$p.value
+  )
+}
+
+# Adjust p-values for multiple testing
+p_values <- sapply(MTS_wilcoxon_res_ratios, function(x) x$p_value)
+adjusted_p_values <- p.adjust(p_values, method = "BH")
+
+# Add adjusted p-values to results
+for(i in seq_along(analytes)){
+  MTS_wilcoxon_res_ratios[[analytes[i]]]$adjusted_p_value <- adjusted_p_values[i]
+  MTS_wilcoxon_res_ratios[[analytes[i]]]$significance <- significance(adjusted_p_values[i])
+}
+
+# Combine results into one data frame
+MTS_Nostril_Wilcoxon_Res_Ratios <- bind_rows(MTS_wilcoxon_res_ratios)
+```
+
+## Nostrils: Ratios Plot (visualize the results)
+```{r, warning=FALSE, fig.width=11, fig.height=8}
+# Add a column to distinguish MLF and MTS in the data
+wide_data_nostril$Sample_Type <- "MLF"
+wide_data_nostril_mts$Sample_Type <- "MTS"
+
+# Combine the MLF and MTS data into one dataframe
+combined_data <- bind_rows(
+  wide_data_nostril %>% select(Analyte, log_ratio, Sample_Type),
+  wide_data_nostril_mts %>% select(Analyte, log_ratio, Sample_Type)
+)
+
+ratio_nostril_plot <- ggplot(combined_data, aes(x = Analyte, y = log_ratio, fill = Sample_Type)) +
+  geom_boxplot(position = position_dodge(width = 0.75), alpha=0.6) +  
+ geom_point( 
+             position = position_dodge(width = 0.75),  # Align points with respective boxplot
+             size = 1.5, alpha = 0.5) +  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +  # Reference line at log ratio =  
+  labs(
+       x = "Total Antibodies",
+       y = "Log Ratio (log10(Left) - log10(Right))",
+       fill = "Sample Type") + scale_fill_manual(values = custom_colors)+
+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+
+# visualize plot:  
+ratio_nostril_plot
+
+# Create a small annotation data frame to indicate the significance
+annotations <- data.frame(
+  Analyte = c("IgA", "IgG","IgM"),
+  Sample_Type = "MLF",
+  y = c(2, 2,2),
+  label = c("*", "***", "***")
+)
+
+# Add to the existing plot
+final_ratio_nostril_plot <- ratio_nostril_plot +
+  geom_text(data = annotations,
+            aes(x = Analyte, y = y, label = label,group = Sample_Type),
+            inherit.aes = FALSE, position = position_nudge(x = -0.2),
+            size = 5)
+final_ratio_nostril_plot
+
+# Save Plot:
+# ggsave(filename = "Luminex_Nostrils_Ratios_28_04_2025.tiff"
+#        , plot = final_ratio_nostril_plot, width = 13, height = 11 ,dpi = 300,
+#        device="tiff", compression="lzw")
+```
+
+
+# Professional vs Self Collected samples 
+This was applied to the subset (N = 16 participants) that additionally self-collected the non-invasive samples (MTS, MLF and saliva).
+To assess agreement between collection strategies, we calculated within-participant log10 ratios as log10(Self) - log10(Professional), equivalent to log10(Self / Professional). These values were used to visualize directional differences between collection strategies and tested against zero using a Wilcoxon signed-rank test.
+```{r Pro v Self, fig.width=10, fig.height=8}
+#Convert columns as factors:
+mydf2 <- mydf2 %>%
+  convert_as_factor(Analyte, Sampling_Method) %>% 
+  group_by(ID, Sample_Type, Analyte) %>% 
+  # Calculate the mean for nostrils (Left and Right) for professional samples only
+  mutate(mean_concentration = ifelse(Sample_Type %in% c("MLF", "MTS") & !is.na(Nostril), mean(concentration, na.rm = TRUE),  # Mean for Left/Right nostrils
+                                     concentration)) %>%  # Keep other samples as they are
+  ungroup() %>%
+  
+  # Remove the duplicated rows by keeping one row for nostrils (Left/Right) per group
+  distinct(ID, Sample_Type, Analyte,Sampling_Strategy, .keep_all = TRUE) %>% 
+  
+  # Apply the log transformation after handling duplicates
+  mutate(log_10_mean = log10(mean_concentration))
+
+# subset for self-collected samples
+self_df <- mydf2 %>% filter(Sampling_Strategy == "Self")
+# calculate participants
+self_ids <-  unique(self_df$ID)
+#select which samples will be tested
+samples_sel <- c("MLF","MTS","Saliva")
+
+# Make dataframe for the self vs professional sampling strategy comparison:
+selfvprof <- mydf2 %>% filter(ID %in% self_ids) %>% 
+  filter(Sample_Type %in% samples_sel)
+
+# Convert the dataframe to wide format  
+wide_data <- selfvprof %>%  dplyr::select(Sampling_Strategy,ID,log_10_mean,Analyte, Sample_Type) %>% 
+  pivot_wider(names_from = Sampling_Strategy, 
+              values_from = log_10_mean) %>% drop_na()
+
+# Rough visualization of concentrations
+ggplot(selfvprof, aes(x = Analyte, y = log_10_mean, fill = Sampling_Strategy)) +
+  geom_boxplot(position = position_dodge(width = 0.75), alpha=0.6) +  
+ geom_point( 
+             position = position_dodge(width = 0.75),  # Align points with respective boxplot
+             size = 1.5, alpha = 0.5) +  
+  facet_wrap(~Sample_Type)+
+  labs(title = "Self vs Professionally Collected Samples",
+       x = "Total Antibodies",
+       y = "Concentration (log10)",
+       fill = "Sampling Strategy") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+# Log Ratio (Self vs Professionally Collected Samples)
+
+To quantify within-participant differences between collection strategies, log10 ratios were calculated as log10(Self) - log10(Professional), equivalent to log10(Self / Professional). Values above zero indicate higher concentrations in self-collected samples, whereas values below zero indicate higher concentrations in professionally collected samples.
+```{r}
+# Add log ratio column
+combined_strategy_data <- wide_data %>%
+  mutate(log_ratio = Self - Professional)
+```
+
+# Statistical Test
+
+For each sample type and analyte, log10 ratios were tested against zero using a one-sample Wilcoxon signed-rank test. P-values were adjusted across all self-versus-professional comparisons using the Benjamini–Hochberg method.
+```{r}
+strategy_wilcox_logratios <- list()
+p_values <- c()
+
+for (sample_type in c("MLF", "MTS", "Saliva")) {
+  data_sub <- combined_strategy_data %>% filter(Sample_Type == sample_type)
+  
+  for (analyte in analytes) {
+    subset_analyte <- data_sub %>% filter(Analyte == analyte)
+    
+    test_result <- wilcox.test(subset_analyte$log_ratio, mu = 0)
+    
+    strategy_wilcox_logratios[[paste0(sample_type, "_", analyte)]] <- data.frame(
+      Sample_Type = sample_type,
+      Analyte = analyte,
+      W = test_result$statistic,
+      p_value = test_result$p.value
+    )
+    
+    p_values <- c(p_values, test_result$p.value)
+  }
+}
+
+results_df_selfvproflog <- combined_strategy_data %>%
+  filter(Sample_Type %in% c("MLF","MTS","Saliva")) %>%
+  group_by(Sample_Type, Analyte) %>%
+  summarise(
+    test = list(wilcox.test(log_ratio, mu=0, exact=FALSE)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    W         = map_dbl(test, "statistic"),
+    p_value   = map_dbl(test, "p.value")
+  ) %>%
+  select(-test) %>%
+  mutate(
+    adjusted_p  = p.adjust(p_value, method="BH"),
+    significance = map_chr(adjusted_p, significance)
+  )
+
+```
+
+# Visualization of results (Self vs Professionally collected samples)
+```{r, warning=FALSE, fig.width=10, fig.height=8}
+custom_colors2 <- c("MTS"="#F6EFBD","MLF"="#FFBD73","Saliva"="#8ABFA3")
+ratio_strategy_plot <- ggplot(combined_strategy_data, aes(x = Analyte, y = log_ratio, fill = Sample_Type)) +
+  geom_boxplot(position = position_dodge(width = 0.75), alpha = 0.6) +
+  geom_point(position = position_dodge(width = 0.75), size = 1.5, alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  scale_fill_manual(values = custom_colors2) +
+  labs(title = NULL,
+       x = "Total Antibodies", y = "Log Ration (log10(Self) - log10(Professional))", fill = "Sample Type") +
+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust=1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+
+ratio_strategy_plot
+#
+
+# Save plot:
+# ggsave("Log_Ratio_SelfvProf_Total_Abs.tiff", plot = ratio_strategy_plot, dpi = 300, width = 13, height = 10, units = "in", device = "tiff", compression = "lzw" )
+
+```
+
+# Plots: Analytes Across Samples (Isotype Distribution)
+
+To compare total antibody isotype distributions across URT niches, concentrations of IgA, IgG, and IgM were visualized per sample type using paired subject-level profiles overlaid with group-level distributions.
+```{r, warning=FALSE, fig.width=10, fig.height=8}
+
+# Create custom colors per isotype:
+customs <- c("IgA" = "lightsalmon1",
+             "IgG" = "darkolivegreen3",
+             "IgM" = "cadetblue2")
+
+library(ggplot2)
+library(viridis)  # For viridis color options
+library(scales)   # For custom log scale formatting
+
+# rough isotype distribution plot:
+analytes_plot <- ggplot(prof_df2, aes(x = Analyte, y = concentration, group = ID)) +
+  geom_line(alpha = 0.3, size = 0.6, color = "gray40") + 
+  geom_point( size = 2, alpha = 0.7) + 
+  geom_boxplot(aes(fill=Analyte,group = Analyte), position = position_dodge(width = 0.8), alpha = 0.5)+
+  scale_y_log10(labels = trans_format("log10", math_format(10^.x))) +  # 
+  facet_wrap(~Sample_Type, scales = "free_x") +  
+  scale_fill_manual(name   = "Total Antibodies",values = customs)+
+  labs(
+    y = "Log 10 Concentration (ng/mL)",
+    x = NULL,
+    color = "Total Antibodies"
+  ) +theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle = 75, vjust = 1,  hjust = 1, size = 22),
+    axis.text.y      = element_text(size = 20),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+    legend.position = "top"
+  )
+  
+analytes_plot
+
+
+
+prof_df2_complete <- prof_df2 %>%
+  # make sure there's one row per sample
+  distinct(Sample_Type, ID, Analyte, .keep_all = TRUE) %>%
+  # keep only IDs within each Sample_Type that have all 3 analytes
+  group_by(Sample_Type, ID) %>%
+  filter(all(c("IgA", "IgG", "IgM") %in% Analyte)) %>%
+  ungroup()
+
+#--------------------
+library(ggpubr)
+# define pairwise comparisons
+comparisons <- list(c("IgA", "IgG"),
+                    c("IgA", "IgM"),
+                    c("IgG", "IgM"))
+
+# final isotype distribution plot
+analytes_plot <- ggplot(prof_df2, aes(x = Analyte, y = concentration, fill = Analyte)) +
+  geom_boxplot(alpha = 0.6, width = 0.7, outlier.shape = NA) +
+  geom_jitter(aes(color = Analyte), width = 0.15, alpha = 0.3, size = 2,color = "black") +
+  scale_y_log10(labels = trans_format("log10", math_format(10^.x))) +
+  facet_wrap(~Sample_Type, scales = "free_x") +
+  scale_fill_manual(values = customs, name = "Total Antibodies") +
+  stat_compare_means(
+    comparisons = comparisons,
+    method = "wilcox.test",
+    label = "p.signif",
+    hide.ns = FALSE,
+    size=6,
+    label.y = c(6.5,7,7.5)
+  ) +
+  labs(
+    y = expression("Log"[10]*" Concentration (ng/mL)"),
+    x = NULL
+  ) +
+  theme_bw(base_size = 22) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 22),
+    legend.text = element_text(size = 20),
+    axis.text.x = element_text(angle = 75, hjust = 1, size = 20),
+    axis.text.y = element_text(size = 18),
+    strip.text = element_text(size = 22)
+  ) +
+  guides(fill = guide_legend(title.position = "bottom", title.hjust = 0.5))
+
+analytes_plot
+
+# Save Plot:
+ # ggsave("Total_Abs_Pattern_new.tiff", plot = analytes_plot, dpi = 300, width = 13, height = 11, units = "in", device = "tiff", compression = "lzw" )
+
+```
+
+
+# Log-Linear Mixed Model
+
+To estimate relative differences in total antibody concentrations between professionally collected sample types while accounting for repeated measurements within participants, log10-transformed concentrations were analyzed using linear mixed-effects models. NPS was used as the reference sample type, and participant ID was included as a random intercept. Model estimates were back-transformed to obtain geometric mean ratios (GMRs) and 95% confidence intervals.
+
+## A) Model & Model Checks
+```{r, warning=FALSE, fig.align='left', fig.height=8, fig.width=10}
+
+my_df_prof_me <- mydf2 %>% 
+  filter(Sampling_Strategy == "Professional") 
+
+my_df_prof_me$Sample_Type<-factor(my_df_prof_me$Sample_Type,
+                      levels = c("NPS",
+                                 "MTS",
+                                 "MLF",
+                                 "Saliva",
+                                 "OPS"))
+# Check residuals for normality for a sample model
+# Detach conflicting packages (if applicable)
+#detach("package:reticulate", unload = TRUE)
+
+# Run the Mixed-Effects Model:
+library(lmerTest)
+sample_model <- lmer(log10(concentration) ~ Sample_Type + (1 | ID), data = my_df_prof_me %>% filter(Analyte == analytes[1]))
+
+# Residual diagnostics: Q-Q plot
+qqnorm(residuals(sample_model))
+qqline(residuals(sample_model), col="red")
+
+# Residuals vs Fitted values plot
+plot(fitted(sample_model), residuals(sample_model),
+     main = "Residuals vs Fitted",
+     xlab = "Fitted values",
+     ylab = "Residuals")
+abline(h = 0, lty = 2, col = "red")
+
+# Extract random effects for ID from the model
+random_effects <- ranef(sample_model)$ID[, "(Intercept)"]  # Extract the random intercept for 'ID'
+
+# Plot Q-Q plot of random effects
+qqnorm(random_effects)
+qqline(random_effects, col = "red")  # Add a red line to the plot
+```
+
+## B) Geometric Mean Ratios: Comparing with the Reference (NPS)
+```{r, warning=FALSE, fig.width=11,fig.height=8}
+library(broom.mixed) 
+set.seed(2024)
+# List of unique analytes
+analytes <- unique(my_df_prof_me$Analyte)
+my_df_prof_me$Sample_Type <- relevel(my_df_prof_me$Sample_Type, ref = "NPS")
+
+# Initialize a list to store results
+results_list <- list()
+
+# Loop through each analyte
+for (analyte in analytes) {
+  # Filter data for the current analyte
+  data_analyte <- my_df_prof_me %>%
+    filter(Analyte == analyte)
+  
+  # Fit the log-linear mixed model with simplified random effects
+  model_analyte <- lmer(log10(concentration) ~ Sample_Type + (1 | ID), data = data_analyte)
+  
+  # Tidy the model results
+  tidy_model <- tidy(model_analyte, effects = "fixed")
+  
+  # Calculate confidence intervals for the fixed effects
+  conf_intervals <- confint(model_analyte, parm = "beta_", method = "Wald")
+  
+  # Convert the confidence intervals to a data frame
+  conf_intervals_df <- as.data.frame(conf_intervals)
+  conf_intervals_df <- conf_intervals_df %>%
+    rownames_to_column(var = "term") %>%
+    rename(conf.low = `2.5 %`, conf.high = `97.5 %`)
+  
+  # Merge the tidy model results with the confidence intervals
+  tidy_model <- tidy_model %>%
+    left_join(conf_intervals_df, by = "term") %>%
+    mutate(
+      estimate = exp(estimate),
+      conf.low = exp(conf.low),
+      conf.high = exp(conf.high),
+      Analyte = analyte
+    )
+  
+  # Store the results in the list
+  results_list[[analyte]] <- tidy_model
+}
+
+# Combine all results into a single data frame
+all_results <- bind_rows(results_list)
+all_results <- all_results %>%
+  mutate(term = ifelse(term == "(Intercept)", "NPS", gsub("Sample_Type", "", term)))
+# Print the combined results
+print(all_results)
+```
+
+# Predicted GMs
+```{r predicted GMs}
+# Calculate absolute geometric means from all_results
+absolute_geometric_means <- all_results %>%
+  group_by(Analyte) %>%
+  mutate(
+    # Get the intercept for NPS as the reference mean
+    ref_mean = estimate[term == "NPS"],
+    # Calculate absolute geometric means by multiplying the reference mean by each term's estimate
+    absolute_geometric_mean = ifelse(term == "NPS", ref_mean, ref_mean * estimate),
+    # Calculate confidence intervals for the absolute geometric means
+    absolute_conf.low = ifelse(term == "NPS", conf.low, ref_mean * conf.low),
+    absolute_conf.high = ifelse(term == "NPS", conf.high, ref_mean * conf.high)
+  ) %>%
+  ungroup() %>%
+  select(Analyte, term, absolute_geometric_mean, absolute_conf.low, absolute_conf.high)
+
+# Print the results
+print(absolute_geometric_means)
+
+
+# Combine geometric mean and 95% CI into a single column
+absolute_geometric_means_table <- absolute_geometric_means %>%
+  mutate(
+    Geom_Mean_CI = paste0(
+      round(absolute_geometric_mean, 3), " (", 
+      round(absolute_conf.low, 3), " - ", 
+      round(absolute_conf.high, 3), ")"
+    )
+  ) %>%
+  select(Analyte, term, Geom_Mean_CI)
+
+# Reshape data so that each analyte has its own column
+reshaped_geom_means <- absolute_geometric_means_table %>%
+  pivot_wider(
+    names_from = Analyte, 
+    values_from = Geom_Mean_CI
+  ) %>%
+  rename(Sample_Type = term)
+
+library(gt)
+# Create the `gt` table
+geom_mean_ci_table <- reshaped_geom_means %>%
+  gt(rowname_col = "Sample_Type") %>%
+  tab_header(
+    title = "Absolute Geometric Mean (95% CI) by Analyte and Sample Type",
+    subtitle = "Modeled Data Concentrations (ng/mL)"
+  ) %>%
+    tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  cols_align("center") %>%
+    tab_style(
+    style = cell_text(weight = "bold"),  # Apply bold text to sample type row labels
+    locations = cells_stub()
+  )
+
+# Display the table
+geom_mean_ci_table
+#gtsave(geom_mean_ci_table, "Geom_Mean_CI_Table.docx")
+```
+
+## Visualization of Mixed-Effect Model results
+```{r, warning=FALSE, fig.width=11,fig.height=8}
+library(forcats)
+
+# Reorder Sample_Type (term) factor levels to ensure NPS comes first
+all_results <- all_results %>%
+  mutate(term = fct_relevel(term, "NPS", "MTS", "MLF", "OPS", "Saliva"))
+
+# Define custom colors for our Sample Types
+custom_colors <- c("NPS" = "#A2D2DF", 
+                   "MTS" = "#F6EFBD",       
+                   "MLF" = "#FFBD73",
+                   "OPS" = "#BC7C7C",
+                   "Saliva" = "#8ABFA3")
+
+
+#Plot:
+# Modify data: Set NPS ratio to 1
+all_results_up <- all_results %>%
+  mutate(
+    estimate = ifelse(term == "NPS", 1, estimate),  # Set estimate to 1 for NPS
+    conf.low = ifelse(term == "NPS", 1, conf.low),   # Set conf.low to 1 for NPS
+    conf.high = ifelse(term == "NPS", 1, conf.high)  # Set conf.high to 1 for NPS
+  )
+
+all_results_up$term <- relevel(all_results_up$term, ref = "NPS")
+
+# Main figure for mixed-effects model results:
+GMR_Pred_Plot_3 <- ggplot(all_results_up, aes(x = term, y = estimate, fill = term)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") + # Reference line at GMR=1
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                position = position_dodge(width = 0.9), 
+                width = 0.2, color = "black") +  # Error bar color
+  scale_fill_manual(values = custom_colors) +  # Apply custom colors
+  labs(
+    x = NULL,
+    y = "Geometric Mean Ratio",
+    fill = "Sample Type") +
+  facet_wrap(~Analyte, scales = "free_y") + # Ensure consistent y-axis
+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle = 75, vjust = 1, hjust = 1, size = 24),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+  
+
+# Print the plot:
+GMR_Pred_Plot_3
+
+# Save the plot: 
+# ggsave("Total_Abs_GMR_v1_new.tiff", plot = GMR_Pred_Plot_3, dpi = 300, width = 11, height = 8, units = "in", device = "tiff", compression = "lzw" )
+```
+
+
+## GMR Results Table
+Create a table of the mixed-effects model results.
+```{r, warning=FALSE}
+library(gt)
+ # Define a significance function using ifelse
+ significance <- function(p) {
+   ifelse(p < 0.001, "***", 
+          ifelse(p < 0.01, "**", 
+                 ifelse(p < 0.05, "*", " ")))
+ }
+#Make the DF a bit better:
+all_results_no_np <- all_results_up %>% 
+  filter(term != "NPS")
+ 
+ 
+GMR_For_Table <- all_results_no_np %>% 
+  rename(`Sample Type` = "term") %>% 
+  rename(GMR = "estimate") %>% 
+  mutate(Significance = significance(p.value))  
+  
+GMR_For_Table <- GMR_For_Table %>% 
+  mutate(GMR_CI = paste0(sprintf("%.2f", GMR), "<br>(",
+                         sprintf("%.2f", conf.low), ", ", 
+                         sprintf("%.2f", conf.high), ") ", 
+                         Significance))
+# Pivot the data to have Analytes as columns and Sample Type as rows
+wide_table_GMR <- GMR_For_Table %>% 
+  subset(select=c(Analyte, GMR_CI, `Sample Type`)) %>% 
+  pivot_wider(names_from = Analyte, values_from = GMR_CI)
+
+##### Make the table ##### 
+# Create the gt table
+gt_table <- wide_table_GMR %>%
+  gt(rowname_col = "Sample Type") %>%
+  tab_header(
+    title = md("**GMR and 95% CI: Analytes by Sample Type**"),
+    subtitle = "Professionally Collected"
+  ) %>%
+  fmt_markdown(columns = everything()) %>%  # Ensure <br> is rendered as HTML
+  tab_style(
+    style = cell_text(weight = "bold"),  # Apply bold text to analyte column headers
+    locations = cells_column_labels(columns = everything())
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),  # Apply bold text to sample type row labels
+    locations = cells_stub()
+  ) %>%
+  cols_align("center") %>%  # Center-align all columns
+  tab_style(
+    style = cell_text(size = "small"),  # Apply smaller text size to the body
+    locations = cells_body(columns = everything())
+  )
+
+
+# Show the table
+gt_table
+ # gtsave(gt_table, "GMR_table_Total_Antibodies_311024.html")
+#Save the table
+#gtsave(gt_table, "GMR_table_Total_Antibodies_30062025.docx")
+```
+
+
+## Geometric Means Table (Observed Data)
+Make a table to report the geometric mean of the observed data per sample type and isotype.
+```{r, warning=FALSE}
+# Function to calculate geometric mean
+geom_mean <- function(x) exp(mean(log(x), na.rm = TRUE))
+
+# Function to calculate 95% confidence interval for geometric means
+geom_ci <- function(x) {
+  log_x <- log(x)
+  gm <- mean(log_x, na.rm = TRUE)
+  se_log <- sd(log_x, na.rm = TRUE) / sqrt(length(log_x[!is.na(log_x)]))
+  lower <- gm - 1.96 * se_log
+  upper <- gm + 1.96 * se_log
+  return(exp(c(lower, upper)))  # Back-transform to original scale
+}
+
+# Calculate summary statistics for each analyte and sample type (professionally collected samples)
+df_prof <- mydf2 %>% filter(Sampling_Strategy == "Professional")
+summary_stats <- my_df_prof %>%
+  group_by(Analyte, Sample_Type) %>%
+  summarize(
+    Geometric_Mean = geom_mean(concentration),
+    Geom_CI_Lower = geom_ci(concentration)[1],
+    Geom_CI_Upper = geom_ci(concentration)[2],
+    Range_Min = min(concentration, na.rm = TRUE),
+    Range_Max = max(concentration, na.rm = TRUE),
+    n = n()
+  )
+
+# Combine Geometric Mean and CI into one column
+summary_stats <- summary_stats %>%
+  mutate(Geom_Mean_CI = paste0(round(Geometric_Mean, 3), " (", round(Geom_CI_Lower, 3), " - ", round(Geom_CI_Upper, 3), ")"))
+
+# Keep only relevant columns for table
+summary_stats_clean <- summary_stats %>%
+  select(Sample_Type, Analyte, Geom_Mean_CI, Range_Min, Range_Max, n)
+
+# Reshape data to have Analytes as columns
+reshaped_data <- summary_stats_clean %>%
+  pivot_wider(
+    names_from = Analyte, 
+    values_from = c(Geom_Mean_CI, Range_Min, Range_Max, n)
+  )
+
+# Combine Geometric Mean with 95% CI
+reshaped_data_cleaned <- reshaped_data %>%
+  rename_with(.fn = ~ str_replace(., "Geom_Mean_CI_", ""), .cols = starts_with("Geom_Mean_CI")) %>%
+  mutate(Sample_Size = select(., starts_with("n_")) %>% rowMeans(na.rm = TRUE)) %>%
+  select(-starts_with("n_"))  # Remove individual n_* columns
+
+
+reshaped_data_cleaned_2 <- reshaped_data_cleaned[,-c(5:10)]
+
+# Create the `gt` table
+summary_table <- reshaped_data_cleaned_2 %>%
+  gt(rowname_col = "Sample_Type") %>%
+  tab_header(
+    title = "Geometric Mean (95% CI) by Analyte and Sample Type",
+    subtitle = "Observed Data Concentrations (ng/mL)"
+  ) %>%
+  cols_label(
+    Sample_Size = "Sample Size"
+  ) %>%
+    tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  fmt_number(
+    columns = everything(),
+    decimals = 3
+  ) %>% fmt_number(
+    columns = vars(Sample_Size),  
+    decimals = 0  # No decimal places for Sample Size
+  ) %>%  tab_style(
+    style = cell_text(weight = "bold"),  
+    locations = cells_row_groups()
+  ) %>%
+  cols_align("center") %>% tab_style(
+    style = cell_text(weight = "bold"),  # Apply bold text to sample type row labels
+    locations = cells_stub())
+# Display the table
+summary_table
+#Save the table
+# gtsave(summary_table, "GM_table_Observed_301024.html")
+#gtsave(summary_table, "GM_table_Observed_new.docx")
+```
+
+## Descriptive Statistics
+```{r, warning=FALSE}
+# Compute summary statistics for each analyte and sample type
+summary_stats3 <- my_df_prof %>%
+  group_by(Analyte, Sample_Type) %>%
+  summarize(
+    Range_Min = min(concentration, na.rm = TRUE),
+    Range_Max = max(concentration, na.rm = TRUE),
+    Median_Conc = median(concentration, na.rm = TRUE),
+    IQR_Lower = quantile(concentration, 0.25, na.rm = TRUE),
+    IQR_Upper = quantile(concentration, 0.75, na.rm = TRUE),
+    SD_Conc = sd(concentration, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+# Convert all statistics to character format
+restructured_stats <- summary_stats3 %>%
+  mutate(
+    Range = paste0(round(Range_Min, 3), " - ", round(Range_Max, 3)),  # Combine Min and Max into one column
+    IQR = paste0(round(IQR_Lower, 3), " - ", round(IQR_Upper, 3)),  # Combine IQR into one column
+    Median = as.character(round(Median_Conc, 3)),  # Convert Median to character
+    SD = as.character(round(SD_Conc, 3))  # Convert SD to character
+  ) %>%
+  select(Sample_Type, Analyte, Range, Median, IQR, SD)
+
+
+restructured_stats_long <- restructured_stats %>%
+  pivot_longer(
+    cols = c(Range, Median, IQR, SD),
+    names_to = "Statistic",
+    values_to = "Value"
+  ) %>%
+  pivot_wider(
+    names_from = Analyte,  # Make analytes into columns
+    values_from = Value  # Fill values with the statistics
+  )
+
+
+# Create the gt table with sub-rows for each statistic
+summary_table3 <-restructured_stats_long %>%
+  gt(rowname_col = "Sample_Type") %>%
+  tab_header(
+    title = "Range, Median, IQR, and SD by Analyte and Sample Type",
+    subtitle = "Concentrations (ng/mL)"
+  ) %>%
+  cols_label(
+    Statistic = "Statistic"
+    # You can customize the column names for each analyte here
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),  # Make the Sample Type bold
+    locations = cells_row_groups()  # Applies bold to the row group labels (Sample Type)
+  ) %>%
+  cols_align("center")%>%  tab_style(
+    style = cell_text(weight = "bold"),  
+    locations = cells_row_groups()
+  ) %>%
+  cols_align("center") %>% tab_style(
+    style = cell_text(weight = "bold"),  # Apply bold text to sample type row labels
+    locations = cells_stub())%>%
+    tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  )  # Center-align the table
+
+# Display the table
+summary_table3
+#Save the table:
+# gtsave(summary_table3, "Descriptive_Stats_table_301024.html")
+```
+
+
+

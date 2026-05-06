@@ -1,0 +1,503 @@
+---
+title: "LegendPlex & Luminex Assays: Correlations"
+output: 
+  html_document:
+    toc: true            # Enable Table of Contents
+    toc_float: true      # Makes the Table of Contents float (optional)
+date: "10-09-2025"
+---
+
+
+# Function to install/load packages:
+```{r load_packages function, include=FALSE}
+load_packages <- function(packages) {
+  sapply(packages, function(pkg) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  })
+}
+
+packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2", 
+              "tidyverse", "ggplot2", "RColorBrewer", "stringr",
+              "rstatix", "ggpubr", "ggsignif", "FSA",  
+              "readxl", "viridis", "patchwork",  "readr",
+              "ggfortify", "factoextra", "pheatmap",
+              "cowplot","pheatmap","psych","cowplot")
+
+load_packages(packages)
+library(gt)
+getwd()
+
+```
+
+# Import data:
+```{r Import data}
+df <- read_excel("02-LegendPlex_data.xlsx")
+
+# change names of sample types for consistency 
+df <- df %>%  
+ mutate(Sample_Type = case_when(
+    Sample_Type == "Mid-turbinate swab" ~ "MTS",
+    Sample_Type == "Nasopharyngeal swab" ~ "NPS",
+    Sample_Type == "Oropharyngeal swab" ~ "OPS",
+    TRUE ~ Sample_Type
+  ))
+
+
+#Convert columns as factors:
+my_dataframe <- df %>%
+  convert_as_factor(Analytes, Sampling_Method) %>% 
+  group_by(ID, Sample_Type, Analytes) %>% 
+  # Calculate the mean for nostrils (Left and Right) for professional samples only
+  mutate(mean_concentration = ifelse(Sample_Type %in% c("MLF", "MTS") & !is.na(Nostril), mean(concentration.est, na.rm = TRUE),  # Mean for Left/Right nostrils
+                                     concentration.est)) %>%  # Keep other samples as they are
+  ungroup() 
+  
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# 1. Keep only participants with all sample types
+# all sample types present in dataset
+all_types <- unique(my_dataframe$Sample_Type)
+
+# keep only participants that have all sample types
+df_filtered <- my_dataframe %>% filter(Sampling_Strategy == "Professional") %>% 
+  group_by(ID) %>%
+  filter(all(all_types %in% Sample_Type)) %>%
+  ungroup()
+
+# count how many samples per sample type there are
+df_filtered %>%
+  distinct(SampleID, Sample_Type) %>%
+  count(Sample_Type)
+
+# create new column by combining participant ID and sample type
+df_filtered <- df_filtered %>% mutate(ID_Site = paste0(ID,"_",Sample_Type))
+
+df_filtered2 <- df_filtered %>%
+  distinct(Analytes, ID_Site, .keep_all = TRUE)
+
+df_filtered2 %>%
+  distinct(SampleID, Sample_Type) %>%
+  count(Sample_Type)
+# convert to wide format
+wide <- df_filtered2 %>% dplyr::select(ID, Sample_Type, mean_concentration, Analytes) %>% 
+  pivot_wider(names_from = Analytes, values_from = mean_concentration)
+```
+
+
+
+# Import total antibody concentration data
+```{r}
+abs<-  read_excel("01-Luminex_Total_Abs_Data.xlsx", 
+    col_types = c("text", "text", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "text", "text", "text", 
+        "text", "text", "text", "text", "text", 
+        "text", "numeric", "numeric", "numeric", 
+        "text", "numeric"))
+# Function to replace "OOR <" values with half of the minimum or half of LLOQ if all values are NA
+replace_missing_with_min <- function(x, lloq) {
+  min_val <- min(x, na.rm = TRUE)
+  if (is.finite(min_val)) {
+    return((1/2) * min_val)
+  } else {
+    return((1/2) * lloq)  # Use half of LLOQ if all values are NA
+  }
+}
+
+# Function to replace "OOR >" values with the maximum x2 concentration in range
+replace_missing_with_max <- function(x) {
+  max_val <- max(x, na.rm = TRUE)
+  if (is.finite(max_val)) {
+    return(max_val*2)
+  } else {
+    return(NA)  # If all values are NA, return NA or another desired fallback
+  }
+}
+
+# Apply the functions per isotype and sample type
+abs <- abs %>%
+  group_by(Analyte, Sample_Type) %>%
+  mutate(
+    concentration = case_when(
+      is.na(Conc_in_Range) & Notes == "OOR <" ~ replace_missing_with_min(Conc_in_Range, LLOQ),
+      is.na(Conc_in_Range) & Notes == "OOR >" ~ replace_missing_with_max(Conc_in_Range),
+      TRUE ~ Conc_in_Range
+    )
+  ) %>%
+  ungroup()
+
+#  Calculate log10 of the new concentration column
+abs <- abs %>%
+  mutate(log10.new = log10(concentration))
+
+
+abs <- abs %>%
+  group_by(ID, Sample_Type) %>%
+  mutate(
+    mean_concentration = ifelse(
+      n() > 1,
+      mean(concentration, na.rm = TRUE),
+      concentration
+    )
+  ) %>%
+  ungroup()
+
+
+# keep only participants that have all sample types
+ab_filtered <- abs %>% filter(Sampling_Strategy == "Professional") %>% 
+  group_by(ID) %>%
+  filter(all(all_types %in% Sample_Type)) %>%
+  ungroup()
+
+ab_filtered %>%
+  distinct(Description, Sample_Type) %>%
+  count(Sample_Type)
+
+ab_filtered <- ab_filtered %>% mutate(ID_Site = paste0(ID,"_",Sample_Type))
+
+ab_filtered2 <- ab_filtered %>%
+  distinct(Analyte, ID_Site, .keep_all = TRUE)
+
+ab_filtered2 %>%
+  distinct(Description, Sample_Type) %>%
+  count(Sample_Type)
+
+ab_filtered2 %>%
+  distinct(ID, Sample_Type) %>%
+  count(Sample_Type)
+
+wide_ab <- ab_filtered2 %>% dplyr::select(ID, Sample_Type, mean_concentration, Analyte) %>% 
+  pivot_wider(names_from = Analyte, values_from = mean_concentration)
+
+wide_ab <- wide_ab %>% filter(!is.na(IgM))
+
+table(wide_ab$Sample_Type)
+
+# get IDs that have all 5 sample types
+ids_with_all <- wide_ab %>%
+  distinct(ID, Sample_Type) %>%
+  count(ID) %>%
+  filter(n == 5) %>%
+  pull(ID)
+
+# filter the main dataset to only those IDs
+wide_ab_balanced <- wide_ab %>%
+  filter(ID %in% ids_with_all)
+
+# check
+table(wide_ab_balanced$Sample_Type)
+
+wide_ab_balanced <- wide_ab_balanced %>%
+  mutate(across(where(is.numeric), ~log10(.)))
+
+wide_10 <- wide %>% mutate(across(where(is.numeric), ~log10(.)))
+
+wide_ab_balanced <- wide_ab_balanced %>%
+  mutate(ID_Type = paste(ID, Sample_Type, sep = "_"))
+
+wide_10 <- wide_10 %>%
+  mutate(ID_Type = paste(ID, Sample_Type, sep = "_"))
+
+wide_combined <- wide_ab_balanced %>%
+  inner_join(wide_10, by = "ID_Type", suffix = c("_ab", "_cyto"))
+
+
+num_df <- wide_combined %>%
+  # drop obvious metadata first
+  select(-ID_ab, -Sample_Type_ab, -ID_Type, -ID_cyto, -Sample_Type_cyto) %>%
+  # keep only numeric analytes (handles spaces/greek chars in names)
+  select(where(is.numeric))
+
+# (optional) log if not already logged
+# num_df <- num_df %>% mutate(across(everything(), ~log10(. + 1)))
+
+cors2 <- cor(num_df, method = "spearman", use = "pairwise.complete.obs")
+```
+
+# Spearman co-correlations
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+
+# all analyte columns = drop IDs and sample type cols
+analytes <- setdiff(names(wide_combined),
+                    c("ID_ab", "Sample_Type_ab", "ID_Type",
+                      "ID_cyto", "Sample_Type_cyto"))
+
+# function is the same as before
+cor_one <- function(analyte) {
+  df <- wide_combined %>%
+    select(ID_ab, Sample_Type_ab, !!sym(analyte)) %>%
+    pivot_wider(names_from = Sample_Type_ab, values_from = !!sym(analyte))
+  
+  df_complete <- df %>% drop_na()
+  if (nrow(df_complete) < 3) return(NULL)
+  
+  mat <- df_complete %>% select(-ID_ab)
+  combs <- combn(names(mat), 2, simplify = FALSE)
+  
+  map_dfr(combs, function(xy) {
+    ct <- suppressWarnings(cor.test(mat[[xy[1]]], mat[[xy[2]]],
+                                    method = "spearman", exact = FALSE))
+    tibble(
+      Analyte = analyte,
+      Sample_Type1 = xy[1],
+      Sample_Type2 = xy[2],
+      rho = unname(ct$estimate),
+      n = sum(complete.cases(mat[, xy])),
+      p_value = ct$p.value
+    )
+  })
+}
+
+# run across all analytes (antibodies + cytokines)
+cor_long <- map_dfr(analytes, cor_one)
+
+cor_long <- cor_long %>%
+  mutate(p_adj = p.adjust(p_value, method = "fdr"))
+```
+
+# Visualize the correlations
+```{r}
+
+cor_plot <- cor_long %>%
+  mutate(
+    Pair = paste(Sample_Type1, Sample_Type2, sep = " vs "),
+    significance = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE ~ ""
+    ),
+    Group = ifelse(Analyte %in% c("IgA", "IgG", "IgM"), "Total\n Antibodies", "Cytokines")
+  )
+
+cor <- ggplot(cor_plot, aes(x = Pair, y = Analyte, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = significance), color = "black", size = 3) +
+  facet_grid(Group ~ ., scales = "free_y", space = "free_y") +  # antibodies vs cytokines
+  scale_fill_distiller(palette = "BrBG", limits = c(-1, 1), na.value = "grey90") +
+  labs(x = NULL, y = NULL, fill = "rho") +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 16),
+    axis.text.y = element_text(size = 16), strip.text = element_text(size = 16, face = "bold")  # facet title size
+  )
+cor
+# Save plot:
+#ggsave("Abs_Cyto_cor_heatmap.tiff", width = 10, height = 8.8, dpi = 300, compression = "lzw")
+
+```
+
+
+# make the data
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+
+# --- prepare data ---
+# split antibody and cytokine data
+ab_data <- wide_combined %>%
+  select(ID_ab, Sample_Type_ab, IgA, IgG, IgM) %>%
+  rename(ID = ID_ab, Sample_Type = Sample_Type_ab)
+
+cyto_data <- wide_combined %>%
+  select(ID_cyto, Sample_Type_cyto, APRIL:Perforin) %>%
+  rename(ID = ID_cyto, Sample_Type = Sample_Type_cyto)
+
+# merge by ID + Sample_Type (keeps only matched samples)
+merged_data <- inner_join(ab_data, cyto_data, by = c("ID","Sample_Type"))
+
+
+```
+
+
+# Fig. 4 co-correlations
+```{r}
+library(tidyverse)
+library(pheatmap)
+library(RColorBrewer)
+library(Hmisc)
+# ---- your functional groups in the exact order you want on axes ----
+group_order <- list(
+  `Antiviral/Cytotoxic`     = c("Perforin","Granzyme A","IFN-α2","IFN-λ1","IFN-γ"),
+  `Chemokine` = c("CXCL10","CCL4","CCL2","CXCL8","CXCL1"),
+  `Humoral/B Cell`          = c("IgM","IgG","IgA","APRIL"),
+   `Inflammatory`            = c("IL-33","IL-6")
+)
+ordered_analytes <- unlist(group_order, use.names = FALSE)
+
+# ---- (optional) map dataset column names -> your display labels ----
+# If your data uses names like IFNA2, IFNG, GranzymeA, IL6/IL33, map them:
+synonyms <- c(
+  "GranzymeA"="Granzyme A",
+  "IFNA2"="IFN-α2",
+  "IFNL1"="IFN-λ1",
+  "IFNG" ="IFN-γ",
+  "IL6"  ="IL-6",
+  "IL33" ="IL-33"
+)
+
+# --- custom colors for each group ---
+group_colors <- c(
+  "Antiviral/Cytotoxic"     = "#B24745",  # red
+  "Chemokine" = "#79AF97",  # orange
+  "Humoral/B Cell"          = "#8491B4", # dark blue
+  "Inflammatory"            = "#EDC948"  # blue
+
+)
+
+# ---- helper: compute upper-triangle correlations (per Sample_Type) ----
+get_corr_df <- function(df, stype) {
+  dat <- df %>%
+    filter(Sample_Type == stype) %>%
+    select(-ID, -Sample_Type) %>%
+    select(where(is.numeric))
+
+  # rename columns to display labels if synonyms provided
+  nm <- colnames(dat)
+  nm2 <- ifelse(nm %in% names(synonyms), unname(synonyms[nm]), nm)
+  colnames(dat) <- nm2
+
+  # keep only analytes you care about, in your order
+  keep <- intersect(ordered_analytes, colnames(dat))
+  if (length(keep) < 2) return(NULL)
+  dat <- dat[, keep, drop = FALSE]
+
+  # Spearman r + p
+  rc   <- rcorr(as.matrix(dat), type = "spearman")
+  rmat <- rc$r
+  pmat <- rc$P
+
+  # upper triangle (no diag)
+  upper_idx <- upper.tri(rmat, diag = FALSE)
+
+  # long-form, one row per unique pair
+  tibble(
+    Var1 = rownames(rmat)[row(rmat)[upper_idx]],
+    Var2 = colnames(rmat)[col(rmat)[upper_idx]],
+    rho  = rmat[upper_idx],
+    pval = pmat[upper_idx],
+    Sample_Type = stype
+  ) %>%
+    mutate(
+      padj = p.adjust(pval, method = "fdr"),
+      stars = case_when(
+        padj <= 0.001 ~ "***",
+        padj <= 0.01  ~ "**",
+        padj <= 0.05  ~ "*",
+        TRUE ~ ""
+      ),
+      # lock the order on both axes to your group order
+      Var1 = factor(Var1, levels = ordered_analytes),
+      Var2 = factor(Var2, levels = ordered_analytes)
+    )
+}
+
+# ---- compute all sample types ----
+all_corrs <- map_dfr(unique(merged_data$Sample_Type),
+                     ~ get_corr_df(merged_data, .x))
+
+# ---- palette: BrBG reversed (brown = pos, green = neg) ----
+pal_brbg <- rev(brewer.pal(11, "BrBG"))
+
+# ---- (optional) group separators (lines between blocks) ----
+present <- ordered_analytes[ordered_analytes %in% (levels(all_corrs$Var1) %||% ordered_analytes)]
+grp_lens <- lengths(lapply(group_order, function(v) intersect(v, present)))
+cuts <- cumsum(grp_lens); cuts <- cuts[cuts < length(present)]
+
+# ---- plot (upper triangle only) ----
+p <- ggplot(all_corrs, aes(x = Var1, y = Var2, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = stars), size = 3) +
+  scale_fill_gradientn(colors = pal_brbg, limits = c(-1, 1), na.value = "white") +
+  scale_x_discrete(drop = FALSE, limits = present) +
+  scale_y_discrete(drop = FALSE, limits = present) +
+  facet_wrap(~ Sample_Type) +
+  coord_fixed() +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust =0.5, size=13.5),
+    axis.text.y = element_text(size = 14),
+    axis.ticks = element_line(color = "black", linewidth = 0.3), 
+    strip.text = element_text(face = "bold", size = 16),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) +
+  labs(fill = "rho", x=NULL, y=NULL,
+       title = NULL)
+
+# add separators if you want them
+if (length(cuts)) {
+  for (k in cuts) {
+    p <- p +
+      geom_hline(yintercept = k + 0.5, linewidth = 0.3, color = "grey30") +
+      geom_vline(xintercept = k + 0.5, linewidth = 0.3, color = "grey30")
+  }
+}
+
+
+
+library(ggnewscale)
+
+# group block positions
+grp_df <- tibble(
+  group = names(group_order),
+  size = lengths(group_order)
+) %>%
+  mutate(
+    start = lag(cumsum(size), default = 0) + 0.5,
+    end   = cumsum(size) + 0.5
+  )
+
+# strips for y-axis (left side)
+axis_rects_y <- grp_df %>%
+  transmute(
+    xmin = 0.5 - 0.3,   # slightly to the left of the first column
+    xmax = 0.5, 
+    ymin = start,
+    ymax = end,
+    Group = group
+  )
+
+# strips for x-axis (top side, above tiles)
+axis_rects_x <- grp_df %>%
+  transmute(
+    xmin = start,
+    xmax = end,
+    ymin = max(end) + 0.5,         # just above the last row
+    ymax = max(end) + 0.8, 
+    Group = group
+  )
+
+axis_rects <- bind_rows(axis_rects_x, axis_rects_y)
+
+# extend plot limits so top strip is visible
+gg<- p +
+  ggnewscale::new_scale_fill() +
+  geom_rect(data = axis_rects,
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = Group),
+            inherit.aes = FALSE, color = NA) +
+  scale_fill_manual(values = group_colors) +
+  coord_cartesian(clip = "off")   # allows drawing outside normal panel
+
+# Visualize plot:
+gg
+# Save as TIFF
+ggsave("cross_correlations.tiff", gg,
+       width = 13.9, height = 9, units = "in",
+       dpi = 600, device = "tiff", bg = "white", compression = "lzw")
+```
+

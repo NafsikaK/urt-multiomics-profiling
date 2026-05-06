@@ -1,0 +1,189 @@
+---
+title: "RESPIFINDER: new analysis"
+output: word_document
+date: "2025-09-21"
+---
+
+
+
+
+```{r}
+# Define a vector with the package names
+packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2", 
+              "tidyverse", "ggplot2", "RColorBrewer", "stringr", 
+              "rstatix", "ggpubr", "ggsignif", "FSA", "boot", "coin",
+              "readxl", "viridis", "patchwork",  "lme4", 
+              "matrixStats", "ggfortify", "factoextra", "pheatmap",
+              "cowplot","psych","randomcoloR","ggcorrplot","lmerTest",
+              "emmeans")
+
+# Function to load or install packages
+load_packages <- function(packages) {
+  sapply(packages, function(pkg) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  })
+}
+
+# Load the packages
+load_packages(packages)
+```
+
+# Import data
+```{r}
+
+df <- read_excel("05-multiplex_PCR_data.xlsx")
+
+```
+
+# Table of detections per sample type
+```{r}
+total_samples <- df %>%
+  group_by(Sampling_Method) %>%
+  summarise(Total = n(), .groups = "drop")
+
+positive_summary <- df %>%
+  filter(!is.na(Result)) %>%
+  group_by(Sampling_Method, Result) %>%
+  summarise(Count = n(), .groups = "drop")
+
+df_summary <- positive_summary %>%
+  left_join(total_samples, by = "Sampling_Method") %>%
+  mutate(Percentage = (Count / Total) * 100)
+
+
+
+print(df_summary)
+
+library(gt)
+df_summary %>%
+  separate(Sampling_Method, into = c("Method", "Approach"), sep = "_", remove = TRUE) %>%
+  mutate(
+    Count      = ifelse(is.na(Count), 0, Count),
+    Percentage = ifelse(is.na(Percentage), 0, Percentage),
+    CountPerc  = paste0(Count, " (", round(Percentage,2), "%)")
+  ) %>%
+  # Remove the extra columns
+  select(-Count, -Total, -Percentage) %>%
+  # Pivot so each pathogen is its own column
+  pivot_wider(
+    names_from  = Result,
+    values_from = CountPerc,
+    values_fill = "0 (0%)"
+  ) %>%
+  gt(
+    groupname_col = "Method",  # MLF, MTS, etc. become row groups
+    rowname_col   = "Approach" # Professional, Self, etc. become row labels
+  ) %>%
+  tab_header(
+    title = "Positive Results (Count and Percentage)"
+  ) %>%
+  # Bold the pathogen column headers
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  # Bold the main sample types (row group labels)
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_row_groups()
+  )%>%
+  # Italicize B. pertussis and C. pneumoniae column headers
+  tab_style(
+    style = cell_text(style = "italic"),
+    locations = cells_column_labels(columns = c("B.Pert", "C.Pneu"))
+  )
+
+
+tbl <- df_summary %>%
+  separate(Sampling_Method, into = c("Method", "Approach"), sep = "_", remove = TRUE) %>%
+  mutate(
+    Count      = ifelse(is.na(Count), 0, Count),
+    Total      = ifelse(is.na(Total), 0, Total),
+    Percentage = ifelse(is.na(Percentage), 0, Percentage),
+    CountPerc  = paste0(Count, "/", Total, " (", round(Percentage, 2), "%)")
+  ) %>%
+  select(-Count, -Percentage) %>%  # keep Total if you want, or drop
+  pivot_wider(
+    names_from   = Result,
+    values_from  = CountPerc,
+    values_fill  = "0/0 (0%)"
+  ) %>%
+  gt(groupname_col = "Method", rowname_col = "Approach") %>%
+  tab_header(title = "Positive Results (Count/Total and Percentage)") %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_row_groups()
+  ) %>%
+  tab_style(
+    style     = cell_text(style = "italic"),
+    locations = cells_column_labels(columns = c("B.Pert", "C.Pneu"))
+  )
+
+tbl
+
+# save the gt table as an image (PNG)
+gtsave(tbl, "respi_tbl.html")
+
+```
+
+
+
+# Supplementary figure (concordance of detections)
+```{r}
+library(ggplot2)
+library(dplyr)
+
+plot_data <- df %>%
+  select(ID,SampleID,Nostril, Sample_Type, Sampling_Strategy, Result) %>%
+  mutate(
+    Result2 = case_when(
+      is.na(Result) ~ "Negative",                # keep missing separate
+      Result == "Negative" ~ "Negative",
+      TRUE ~ "Positive"
+    ),Nostril = ifelse(Sampling_Strategy == "Self", NA, Nostril),
+    Sample_N = ifelse(is.na(Nostril), Sample_Type, paste0(Sample_Type, "_", Nostril))
+  )
+
+ggplot(plot_data, aes(x = Sample_N, 
+                      y = ID, fill = Result2)) +
+  geom_tile(color = "white") +
+  facet_wrap(~Sampling_Strategy, , scales = "free_x") +
+  scale_fill_manual(values = c("Positive" = "darkorange3", "Negative" = "lightgray")) +
+  labs(
+    x = NULL, y = "Participant ID", fill = "PCR Result"
+  ) +
+  theme_bw() +
+    theme(
+  axis.title.y  = element_text(size = 16),   # y-axis title
+    axis.text.y   = element_text(size = 14),
+    axis.text.x   = element_text(size = 14, angle = 45, hjust = 1, vjust = 1),
+    strip.text    = element_text(size = 16, face = "bold"),  # facet labels
+    legend.text   = element_text(size = 14),                 # legend entries
+    legend.title  = element_text(size = 16)   # legend title
+  )
+
+
+# save figure
+ggsave(
+  filename = "concordance_plot.tiff",
+  plot     = last_plot(),   
+  device   = "tiff",
+  dpi      = 300,           
+  width    = 10,            
+  height   = 9              
+)
+
+
+
+```
+
+
+
+

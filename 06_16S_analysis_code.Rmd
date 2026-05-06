@@ -1,0 +1,3278 @@
+---
+title: "16S Data Analysis"
+output: 
+  html_document:
+    toc: true            # Enable Table of Contents
+    toc_float: true
+    code_folding: "hide"      
+date: "22-05-2025"
+---
+
+```{r Load Packages, include=FALSE}
+# Function to install/load packages:
+
+load_packages <- function(packages) {
+  sapply(packages, function(pkg) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  })
+}
+
+packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2", 
+              "tidyverse", "ggplot2", "RColorBrewer", "stringr",
+              "rstatix", "ggpubr", "ggsignif", "FSA",  
+              "readxl", "viridis", "patchwork",   
+              "ggfortify", "factoextra", "pheatmap",
+              "cowplot","coin","psych","cowplot",
+              "phyloseq","microbiome","plyr","hrbrthemes",
+              "RColorBrewer","readr", "decontam", "microbiomeutilities",
+              "DECIPHER", "ape","phangorn", "tibble","utils")
+
+load_packages(packages)
+library(microViz)
+library(vegan)
+library(gghalves)
+```
+
+
+# Load File
+
+```{r}
+ps.nose.og <- readRDS("06-ps_nasal_samples.rds")
+ps.oral.og <- readRDS("06-ps_oral_samples.rds")
+
+tax_table(ps.nose.og)[is.na(tax_table(ps.nose.og))] = ""  #Super important!!!
+tax_table(ps.oral.og)[is.na(tax_table(ps.oral.og))] = ""  #Super important!!!
+
+```
+
+# Inspect nasal samples
+```{r}
+print_ps(ps.nose.og)
+
+```
+# Inspect oral samples
+```{r}
+print_ps(ps.oral.og)
+
+```
+# Count number of samples per sample type
+```{r}
+table(sample_data(ps.oral.og)$sample_type)
+table(sample_data(ps.nose.og)$sample_type)
+
+```
+
+# Compositions (from split data)
+```{r}
+ps.nasal <- ps.nose.og
+ps.oral <- ps.oral.og
+#Genus level
+ps.oral.cavity.0.genus <- tax_glom(ps.oral, "Genus", NArm = TRUE)
+
+ps.oral.cavity.rel <- transform_sample_counts(ps.oral.cavity.0.genus, function(OTU) OTU/sum(OTU) * 100) # relative abundance
+
+ps.nasal.cavity.0.genus <- tax_glom(ps.nasal, "Genus", NArm = TRUE)
+
+ps.nasal.cavity.rel <- transform_sample_counts(ps.nasal.cavity.0.genus, function(OTU) OTU/sum(OTU) * 100) # relative abundance
+
+# subset of OPS and saliva samples:
+ops<- ps.oral.cavity.rel %>% ps_filter(Sample_Type == "OPS")
+sal<- ps.oral.cavity.rel %>% ps_filter(Sample_Type == "Saliva")
+```
+
+
+
+# Core members
+```{r}
+# Identify core taxa: detection > 0.1%, present in >50% of samples
+core_taxa_ops <- core_members(ops, detection = 0.001, prevalence = 0.5)
+core_taxa_sal <- core_members(sal, detection = 0.001, prevalence = 0.5)
+core_taxa_oral <- core_members(ps.oral.cavity.rel, detection = 0.001, prevalence = 0.5)
+core_taxa_nasal <- core_members(ps.nasal.cavity.rel, detection = 0.001, prevalence = 0.5)
+
+```
+# Assign taxonomy
+```{r}
+# Extract taxonomy table as a data frame
+tax <- as.data.frame(tax_table(ps.oral.cavity.rel))
+core_taxa_oral_info <- tax[core_taxa_oral, ]
+core_taxa_oral_info$ASV <- rownames(core_taxa_oral_info)
+# Extract taxonomy table as a data frame
+tax_ops <- as.data.frame(tax_table(ops))
+tax_sal <- as.data.frame(tax_table(sal))
+# Subset to core taxa
+core_taxa_ops_info <- tax_ops[core_taxa_ops, ]
+core_taxa_sal_info <- tax_sal[core_taxa_sal, ]
+
+# Optional: Add ASV IDs as a column
+core_taxa_ops_info$ASV <- rownames(core_taxa_ops_info)
+core_taxa_sal_info$ASV <- rownames(core_taxa_sal_info)
+
+tax_nasal <- as.data.frame(tax_table(ps.nasal.cavity.rel))
+core_taxa_nasal_info <- tax_nasal[core_taxa_nasal, ]
+core_taxa_nasal_info$ASV <- rownames(core_taxa_nasal_info)
+
+```
+
+
+## Core taxa : Oral Cavity
+```{r}
+print(core_taxa_oral_info$Genus)
+```
+## Core taxa : Nasal Cavity
+```{r}
+print(core_taxa_nasal_info$Genus)
+```
+
+# Create custom colors for Genera
+```{r}
+top_genera_cols <- c(
+  Corynebacterium = "#B9DDF1",   
+  Streptococcus   = "#325F8C",   
+  Staphylococcus  = "#3C8200",   
+  Dolosigranulum  = "#C2E393",   
+  Lawsonella      = "#EEA9B8",   
+  Haemophilus     = "#CD7054",   
+  Anaerococcus    = "lightsteelblue1",   
+  Moraxella       = "#8B4789",   
+  Prevotella_7    = "burlywood3",   
+  Neisseria       = "#E2F4B4",    
+  Actinomyces     = "#E0CB48",
+  Porphyromonas="#99d8c9",
+  Fusobacterium="#543005",
+  Granulicatella = "#01665e",
+  Lautropia = "#a50026",
+  Listeria = "#fee08b",
+  Peptoniphilus = "#c51b7d",
+  Gemella ="#E87687",
+  Rothia="#41B7C4",
+  Peptoniphilus="#D69054",
+  Finegoldia="#CDC673",
+  Cutibacterium="#FFE8E8",
+  Veillonella ="#D5A7C4",
+  Leptotrichia = "turquoise2",
+  Other = "#C3C3C3"
+)
+```
+
+# Top 10 taxa: Oral cavity
+```{r, fig.width=14, fig.height=10}
+or_tax<- as.data.frame(tax_table(ps.oral.cavity.rel))
+
+
+oral_cavity_comp_plot <- ps.oral.cavity.rel %>%
+  comp_barplot("Genus",  n_taxa = 10) +
+  coord_flip()+
+  scale_fill_manual(values=top_genera_cols)
+oral_cavity_comp_plot
+
+
+oral_cav_sample_type_plot <- ps.oral.cavity.rel %>%
+  comp_barplot("Genus", facet_by = "Sample_Type", n_taxa = 10) +
+  coord_flip() +
+  scale_fill_manual(values=top_genera_cols)
+oral_cav_sample_type_plot
+```
+
+
+
+
+# Top 10 taxa: Nose
+```{r, fig.width=14, fig.height=10}
+
+nasal_cavity_comp_plot <- ps.nasal.cavity.rel %>%
+  comp_barplot("Genus", facet_by = "Sampling_Method", n_taxa = 10) +
+  coord_flip()+
+  scale_fill_manual(values=top_genera_cols)
+nasal_cavity_comp_plot
+
+
+
+
+
+nasal_cav_sample_type_plot <- ps.nasal.cavity.rel %>%
+  comp_barplot("Genus", facet_by = "Sample_Type", n_taxa = 10) +
+  coord_flip()+
+  scale_fill_manual(values=top_genera_cols)
+nasal_cav_sample_type_plot
+```
+
+# Merge the two datasets at the Genus level
+```{r}
+# 1. collapse each to genus, or leave ASV-level:
+#    (here I’ll leave them ASV-level)
+# 2. prefix the ASV names so they never collide
+taxa_names(ps.nasal) <- paste0("Nose__", taxa_names(ps.nasal))
+taxa_names(ps.oral) <- paste0("Oral__", taxa_names(ps.oral))
+
+# 3. now merge
+ps.both <- merge_phyloseq(ps.nasal, ps.oral)
+
+# 4.  collapse to genus and make relative abundances
+ps.both.genus   <- tax_glom(ps.both, "Genus", NArm=TRUE)
+
+ps.both.rel     <- transform_sample_counts(ps.both.genus, function(x) x / sum(x) * 100)
+
+
+```
+
+# You can save this phyloseq object for use in the later multiomics analysis
+```{r}
+saveRDS(ps.both, "ps.for.multiomics.rds")
+```
+
+
+# Top 10 taxa
+```{r, fig.width=14, fig.height=10}
+
+comp_sampling_method_plot <- ps.both.rel %>%
+  comp_barplot("Genus", facet_by = "Sampling_Method", n_taxa = 10) +
+  coord_flip()+
+  scale_fill_manual(values=top_genera_cols)
+comp_sampling_method_plot
+
+
+comp_sample_type_plot <- ps.both.rel %>%
+  comp_barplot("Genus", facet_by = "Sample_Type", n_taxa = 10) +
+  coord_flip()+
+  scale_fill_manual(values=top_genera_cols)
+comp_sample_type_plot
+
+# save plot (optionally)
+# ggsave(
+#   filename    = "oral_compositions-f.tiff",
+#   plot        = oral_cav_sample_type_plot,
+#   device      = "tiff",
+#   dpi         = 300,
+#   width       = 10,      # in inches
+#   height      = 8,      # adjust as needed
+#   units       = "in",
+#   compression = "lzw"
+# )
+
+```
+
+We will use only the **professionally collected** samples for the main comparisons
+```{r}
+#Only Professionally Collected Samples
+ps.rel.prof <- ps.both.rel %>% ps_filter(Sampling_Strategy=="Professional")
+
+
+#Only Nose Professionally Collected Samples
+ps.rel.nose <- ps.rel.prof %>% ps_filter(Region=="Nasal Cavity")
+
+
+#Only OP & Saliva Professionally Collected 
+ps.rel.oral <- ps.rel.prof %>% ps_filter(Region=="Oral Cavity")
+```
+
+
+# setup: colors for each sample type
+```{r}
+
+pcoa_colors<- c(NPS="#A2D2DF", MTS="bisque3", MLF="#FFBD73", OPS ="#BC7C7C", Saliva="#8ABFA3")
+
+region_colors <- c(`Nasal Cavity` = "#A2D2DF", `Oral Cavity`="#BC7C7C")
+
+```
+
+
+
+# Beta-diversity: Regions of the URT
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.rel.prof2 <- prune_taxa(taxa_sums(ps.rel.prof)>0, ps.rel.prof)
+ps.rel.prof.comp <- microbiome::transform(ps.rel.prof2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.rel.prof.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.rel.prof.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Region)
+print(data)
+#significantly different
+```
+
+
+# Bray-Curtis distance matrix : PCoA visualization of beta diversity
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste0(
+  "Nasal vs Oral Cavity:\n",
+  "p = ", format(data$p.adjusted), ", ",  # Format for p-value
+  "R² = ", format(data$R2 * 100, digits = 3), "%"                # Format for R²
+)
+
+out.bc <- ordinate(ps.rel.prof.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.0 <- plot_ordination(ps.rel.prof, out.bc, color="Region") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Region, fill = Region, group = Region),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.0 <- pcoa.bc.0 + scale_color_manual(name = "Region", values = region_colors)
+pcoa.bc.0 <- pcoa.bc.0 + scale_fill_manual(values = region_colors)
+pcoa.bc.0 <- pcoa.bc.0  +
+  annotate("text", x = Inf, y = -Inf, label = annotation_text, 
+           hjust = 1.1, vjust = -0.5, size = 6, fontface = "italic")+
+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+
+
+# view plot:
+pcoa.bc.0
+# save plot:
+ggsave(
+  filename    = "PCoA_Niches0.tiff",
+  plot        = pcoa.bc.0,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+
+```
+
+
+Significant compositional differences (beta-diversity) between the nose and the oral cavity.
+
+
+
+# Beta-diversity: All Sample Types
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.rel.prof2 <- prune_taxa(taxa_sums(ps.rel.prof)>0, ps.rel.prof)
+ps.rel.prof.comp <- microbiome::transform(ps.rel.prof2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.rel.prof.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.rel.prof.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Sample_Type)
+print(data)
+```
+
+
+
+# Bray-Curtis distance matrix : PCoA visualization of beta diversity (sample type level)
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+
+annotation_text <- paste("NPS vs MLF: R² =", format(data$R2[1] * 100, digits = 2), "%"," ", data$sig[1],
+                         "\nNPS vs MTS: R² =", format(data$R2[2] * 100, digits = 2), "%", " ",data$sig[2],
+                         "\nNPS vs OPS: R² =", format(data$R2[3] * 100, digits = 2),  "%"," ",data$sig[3],
+                        "\nNPS vs Saliva: R² =", format(data$R2[4] * 100, digits = 2),  "%"," ", data$sig[4],
+                        "\nMLF vs MTS: R² =", format(data$R2[5] * 100, digits = 2),  "%", " ",data$sig[5],
+                        "\nMLF vs OPS: R² =", format(data$R2[6] * 100, digits = 2),  "%", " ",data$sig[6],
+                        "\nMLF vs Saliva: R² =", format(data$R2[7] * 100, digits = 2),  "%"," ", data$sig[7],
+                        "\nMTS vs OPS: R² =", format(data$R2[8] * 100, digits = 2),  "%", " ",data$sig[8],
+                        "\nMTS vs Saliva: R² =", format(data$R2[9] * 100, digits = 2),  "%", " ",data$sig[9],
+                        "\nOPS vs Saliva: R² =",format(data$R2[10] * 100, digits = 2),  "%", "",data$sig[10])
+
+out.bc <- ordinate(ps.rel.prof.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.1 <- # build the PCoA plot
+pcoa.bc.1 <- plot_ordination(ps.rel.prof, out.bc, color = "Sample_Type") +
+  geom_point(size = 3) +
+  stat_ellipse(aes(fill = Sample_Type, color = Sample_Type, group = Sample_Type),
+               geom = "polygon", alpha = 0.2, linetype = 2, level = 0.25) +
+
+  # scales
+  scale_color_manual(name = "Sample Type", values = pcoa_colors) +
+  scale_fill_manual(name  = "Sample Type", values = pcoa_colors) +
+
+    theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.position =     "none",
+  ) +
+
+  # your multi‐line annotation in the corner
+  annotate("text",
+           x      = Inf, y      = -Inf,
+           label  = annotation_text,
+           hjust  = 1.1, vjust  = -0.05,
+           size   = 6,         # larger than the default 4
+           fontface = "italic"
+  )
+
+# view plot
+pcoa.bc.1
+#save plot
+ggsave(
+  filename    = "PCoA_Niches.tiff",
+  plot        = pcoa.bc.1,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 9,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+
+
+
+
+# Beta-diversity: Nose Sample Types
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.rel.nose2 <- prune_taxa(taxa_sums(ps.rel.nose)>0, ps.rel.nose)
+ps.rel.nose.comp <- microbiome::transform(ps.rel.nose2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.rel.nose.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.rel.nose.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Sample_Type)
+print(data)
+```
+
+
+
+# Bray-Curtis distance matrix: PCoA visualization on nasal samples alone
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste("NPS vs MLF: p =", data$p.adjusted[1],
+                        "\nNPS vs MTS: p =", data$p.adjusted[2],
+                        "\nMLF vs MTS: p =", data$p.adjusted[3])
+
+out.bc <- ordinate(ps.rel.nose.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.2 <- plot_ordination(ps.rel.nose, out.bc, color="Sample_Type") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Sample_Type, fill = Sample_Type, group = Sample_Type),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.2 <- pcoa.bc.2 + scale_color_manual(name = "Sample_Type", values = pcoa_colors)
+pcoa.bc.2 <- pcoa.bc.2 + scale_fill_manual(values = pcoa_colors)
+pcoa.bc.2 <- pcoa.bc.2+theme_bw()
+pcoa.bc.2 <- pcoa.bc.2  +
+  annotate("text", x = -Inf, y = Inf, label = annotation_text, 
+           hjust = -0.1, vjust = 1.05, size = 4, fontface = "italic")
+
+
+# view plot
+pcoa.bc.2
+# save plot
+ggsave(
+  filename    = "PCoA_NasalC.tiff",
+  plot        = pcoa.bc.2,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+# Beta-diversity: OPS, Saliva Sample Types
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.rel.oral2 <- prune_taxa(taxa_sums(ps.rel.oral)>0, ps.rel.oral)
+ps.rel.oral.comp <- microbiome::transform(ps.rel.oral2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.rel.oral.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.rel.oral.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Sample_Type)
+print(data)
+```
+
+
+
+# Bray-Curtis distance matrix: PCoA on oral cavity samples
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste0("OPS vs Saliva: R² = ", format(data$R2 * 100, digits = 3), "%", 
+                          " p = ", data$p.adjusted,"," )
+
+out.bc <- ordinate(ps.rel.oral.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.3 <- plot_ordination(ps.rel.oral, out.bc, color="Sample_Type") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Sample_Type, fill = Sample_Type, group = Sample_Type),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.3 <- pcoa.bc.3 + scale_color_manual(name = "Sample_Type", values = pcoa_colors)
+pcoa.bc.3 <- pcoa.bc.3 + scale_fill_manual(values = pcoa_colors)
+pcoa.bc.3 <- pcoa.bc.3+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+pcoa.bc.3 <- pcoa.bc.3  +
+  annotate("text", x = Inf, y = -Inf, label = annotation_text, 
+           hjust = 1.1, vjust = -0.5, size = 6, fontface = "italic")
+
+
+# view plot
+pcoa.bc.3
+# save plot
+ggsave(
+  filename    = "PCoA_OralC.tiff",
+  plot        = pcoa.bc.3,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 11,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+Significant compositional differences (beta-diversity) between OPS and Saliva samples.
+
+# Here, we explore differences between the left and the right nostril samples (MLF, MTS)
+```{r}
+ps.rel.mlf <- ps.rel.nose %>% ps_filter(Sample_Type == "MLF")
+
+#Only Nose Professionally Collected Samples
+ps.rel.mts <- ps.rel.nose %>% ps_filter(Sample_Type == "MTS")
+
+
+nostril_colors <- c(Left="plum3",Right="slategray3")
+```
+
+
+# Beta-diversity: MLF (Left vs Right Nostril) 
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.rel.mlf2 <- prune_taxa(taxa_sums(ps.rel.mlf)>0, ps.rel.mlf)
+ps.rel.mlf.comp <- microbiome::transform(ps.rel.mlf2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.rel.mlf.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.rel.mlf.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Nostril)
+print(data)
+```
+
+
+
+# PCoA Bray-Curtis distance matrix: Nostrils (MLF)
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste("Left vs Right: R² =", format(data$R2 * 100, digits = 2),"%" ,", p = ",data$p.adjusted)
+
+out.bc <- ordinate(ps.rel.mlf.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.4 <- plot_ordination(ps.rel.mlf, out.bc, color="Nostril") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Nostril, fill = Nostril, group = Nostril),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.4 <- pcoa.bc.4 + scale_color_manual(name = "Nostril", values = nostril_colors)
+pcoa.bc.4 <- pcoa.bc.4 + scale_fill_manual(values = nostril_colors)
+pcoa.bc.4 <- pcoa.bc.4+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+pcoa.bc.4 <- pcoa.bc.4  +
+  annotate("text", x = -Inf, y = Inf, label = annotation_text, 
+           hjust = -0.1, vjust = 1.3, size = 6, fontface = "italic")
+
+
+# view plot
+pcoa.bc.4
+# save plot
+ggsave(
+  filename    = "PCoA_MLF_Nostrils.tiff",
+  plot        = pcoa.bc.4,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+# Beta-diversity: MTS (Left vs Right Nostril) 
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.rel.mts2 <- prune_taxa(taxa_sums(ps.rel.mts)>0, ps.rel.mts)
+ps.rel.mts.comp <- microbiome::transform(ps.rel.mts2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.rel.mts.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.rel.mts.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Nostril)
+print(data)
+```
+
+
+
+# PCoA Bray-Curtis distance matrix: Nostrils (MTS)
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste("Left vs Right: R² =", format(data$R2 * 100, digits = 2),"%" ,", p = ",data$p.adjusted)
+
+out.bc <- ordinate(ps.rel.mts.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.5 <- plot_ordination(ps.rel.mts, out.bc, color="Nostril") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Nostril, fill = Nostril, group = Nostril),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.5 <- pcoa.bc.5 + scale_color_manual(name = "Nostril", values = nostril_colors)
+pcoa.bc.5 <- pcoa.bc.5 + scale_fill_manual(values = nostril_colors)
+pcoa.bc.5 <- pcoa.bc.5 + theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+pcoa.bc.5 <- pcoa.bc.5  +
+  annotate("text", x = -Inf, y = Inf, label = annotation_text, 
+           hjust = -0.1, vjust = 1.3, size = 6, fontface = "italic")
+
+
+# view plot
+pcoa.bc.5
+# save plot
+ggsave(
+  filename    = "PCoA_MTS_Nostrils.tiff",
+  plot        = pcoa.bc.5,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+No significant compositional differences (beta-diversity) between the left and the right nostrils.
+
+
+
+# Beta-diversity: self vs professionally collected samples (per region)
+This was only performed for MTS, MLF and saliva samples
+```{r}
+ps.mlf.str.rel <- ps.both.rel %>% ps_filter(Sample_Type == "MLF")
+ps.mts.str.rel <- ps.both.rel %>% ps_filter(Sample_Type == "MTS")
+ps.saliva.str.rel <- ps.both.rel %>% ps_filter(Sample_Type == "Saliva")
+
+sampling_strategy_colors <- c(Professional="#2F4F4F", Self ="#CD9B1D")
+```
+
+
+# MLF 
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.mlf.str.2 <- prune_taxa(taxa_sums(ps.mlf.str.rel)>0, ps.mlf.str.rel)
+ps.mlf.str.2.comp <- microbiome::transform(ps.mlf.str.2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.mlf.str.2.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.mlf.str.2.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Sampling_Strategy)
+print(data)
+```
+
+
+
+# PCoA Bray-Curtis distance matrix: MLF (professional vs self collection)
+```{r, fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste0("Professional vs Self:R² = ", format(data$R2 * 100, digits = 2), "%", ",",
+                          " p = ", round(data$p.adjusted, 3))
+
+out.bc <- ordinate(ps.mlf.str.2.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.6 <- plot_ordination(ps.mlf.str.rel, out.bc, color="Sampling_Strategy") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Sampling_Strategy, fill = Sampling_Strategy, group = Sampling_Strategy),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.6 <- pcoa.bc.6 + scale_color_manual(name = "Sampling_Strategy", values = sampling_strategy_colors)
+pcoa.bc.6 <- pcoa.bc.6 + scale_fill_manual(values = sampling_strategy_colors)
+pcoa.bc.6 <- pcoa.bc.6+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+pcoa.bc.6 <- pcoa.bc.6  +
+  annotate("text", x = Inf, y = -Inf, label = annotation_text, 
+           hjust = 1.1, vjust = -0.5, size = 5, fontface = "italic")
+
+
+
+pcoa.bc.6
+
+ggsave(
+  filename    = "PCoA_MLF_SampStrategy.tiff",
+  plot        = pcoa.bc.6,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 11,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+
+# MTS
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.mts.str.2 <- prune_taxa(taxa_sums(ps.mts.str.rel)>0, ps.mts.str.rel)
+ps.mts.str.2.comp <- microbiome::transform(ps.mts.str.2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.mts.str.2.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.mts.str.2.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Sampling_Strategy)
+print(data)
+```
+
+
+# PCoA Bray-Curtis distance matrix: MTS (professional vs self collection)
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste0("Professional vs Self:R² = ", format(data$R2 * 100, digits = 2), "%", ",",
+                          " p = ", round(data$p.adjusted, 3))
+
+out.bc <- ordinate(ps.mts.str.2.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.7 <- plot_ordination(ps.mts.str.rel, out.bc, color="Sampling_Strategy") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Sampling_Strategy, fill = Sampling_Strategy, group = Sampling_Strategy),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.7 <- pcoa.bc.7 + scale_color_manual(name = "Sampling_Strategy", values = sampling_strategy_colors)
+pcoa.bc.7 <- pcoa.bc.7 + scale_fill_manual(values = sampling_strategy_colors)
+pcoa.bc.7 <- pcoa.bc.7+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+pcoa.bc.7 <- pcoa.bc.7  +
+  annotate("text", x = Inf, y = -Inf, label = annotation_text, 
+           hjust = 1.1, vjust = -0.5, size = 5, fontface = "italic")
+
+
+
+pcoa.bc.7
+
+ggsave(
+  filename    = "PCoA_MTS_SampStrategy.tiff",
+  plot        = pcoa.bc.7,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 11,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+
+
+# Saliva 
+```{r}
+set.seed(202)
+#Calculate relative abundances
+ps.saliva.str.2 <- prune_taxa(taxa_sums(ps.saliva.str.rel)>0, ps.saliva.str.rel)
+ps.saliva.str.2.comp <- microbiome::transform(ps.saliva.str.2, "compositional")
+
+ps_dist_matrix <- phyloseq::distance(ps.saliva.str.2.comp, method ="bray")
+sampledf <- data.frame(sample_data(ps.saliva.str.2.comp))
+data <- pairwiseAdonis::pairwise.adonis(ps_dist_matrix, sampledf$Sampling_Strategy)
+print(data)
+```
+
+# PCoA Bray-Curtis distance matrix: Saliva (professional vs self collection)
+```{r , fig.width=11, fig.height=8}
+# Using Bray Curtis distance
+# Extract overall p-value or build a summary string, e.g.:
+annotation_text <- paste0("Professional vs Self:R² = ", format(data$R2 * 100, digits = 2), "%", ",",
+                          " p = ", round(data$p.adjusted, 3))
+
+out.bc <- ordinate(ps.saliva.str.2.comp, method = "PCoA", distance ="bray")
+
+pcoa.bc.8 <- plot_ordination(ps.saliva.str.rel, out.bc, color="Sampling_Strategy") +
+  geom_point(size = 2)  +
+  stat_ellipse(
+  aes(color = Sampling_Strategy, fill = Sampling_Strategy, group = Sampling_Strategy),
+  type = "norm",
+  geom = "polygon",
+  alpha = 0.2,
+  linetype = 2,
+  level = 0.25) +
+  theme(legend.position = "bottom")
+
+
+pcoa.bc.8 <- pcoa.bc.8 + scale_color_manual(name = "Sampling_Strategy", values = sampling_strategy_colors)
+pcoa.bc.8 <- pcoa.bc.8 + scale_fill_manual(values = sampling_strategy_colors)
+pcoa.bc.8 <- pcoa.bc.8+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+pcoa.bc.8 <- pcoa.bc.8  +
+  annotate("text", x = Inf, y = -Inf, label = annotation_text, 
+           hjust = 1.1, vjust = -0.5, size = 5, fontface = "italic")
+
+
+
+pcoa.bc.8
+
+ggsave(
+  filename    = "PCoA_Saliva_SampStrategy.tiff",
+  plot        = pcoa.bc.8,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 11,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+Significant compositional differences (beta-diversity) between self and professionally collected samples only for saliva samples.
+
+
+
+# Alpha Diversity:  MLF  - Nostrils
+```{r}
+set.seed(202)
+
+# First we use plot_richness to calculate alpha diversity values
+#Calculate relative abundances
+ps.rel.mlf2 <- prune_taxa(taxa_sums(ps.rel.mlf)>0, ps.rel.mlf)
+ps.rel.mlf.comp <- microbiome::transform(ps.rel.mlf2, "compositional")
+
+p <- plot_richness(ps.rel.mlf2, x="Sample_Type", color="Sample_Type", measures=c("Shannon")) 
+
+levels((p$data)$variable)
+
+# Subset the data values ofr the Shannon indices
+data <- subset((p$data), variable== "Shannon")
+
+ggdensity(data$value, 
+          main = "Density plot of Shannon diversity",
+          xlab = "diversity")
+
+# or Q-Q plot
+ggqqplot(data$value)
+
+# Visual inspection, described in the previous section, is usually unreliable. It's possible to use a significance test comparing the sample distribution to a normal one in order to ascertain whether data show or not a serious deviation from normality.
+
+# Shapiro-Wilk's method is widely recommended for normality test and it provides better power than K-S. It is based on the correlation between the data and the corresponding normal scores.
+shapiro.test(data$value) #Shannon
+#W = 0.98975, p-value = 0.9154
+
+#   follows normal distribution
+
+```
+
+
+
+```{r Shannon boxplot-mlf}
+library(gghalves)
+mlf_df <- sample_data(ps.rel.mlf2)
+# Convert to data frame if needed
+mlf_df <- as.data.frame(sample_data(ps.rel.mlf2))
+
+# Identify samples from each nostril
+left_samples <- rownames(mlf_df[mlf_df$Nostril == "Left", ])
+right_samples <- rownames(mlf_df[mlf_df$Nostril == "Right", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mlf.balanced <- prune_samples(balanced_samples, ps.rel.mlf2)
+
+# Check the new distribution
+table(sample_data(ps.mlf.balanced)$Nostril)
+
+# Check the first few values of the OTU table
+
+# comparisons
+my_comparisons <- list( c("Left", "Right"))
+
+pal <- c(Left="plum3",Right="slategray3")
+theme_set(theme_bw())
+
+# only significant comparison
+#Shannon
+p1 <- plot_richness(ps.mlf.balanced, x="Nostril",color="Nostril", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = Nostril),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal, width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(
+    comparisons = list(c("Left", "Right")),
+    aes(label = ..p.signif..), 
+    method = "t.test",
+    paired = TRUE,
+    p.adjust.method = "fdr",
+    label.y = 3.6, 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Nostril", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p1
+
+
+
+#for the observed
+ps.mlf.prof.obs <- ps.nasal %>% ps_filter(Sample_Type =="MLF")
+table(as.data.frame(sample_data(ps.mlf.prof.obs))$Nostril)
+#We need to filter out the extra timepoints
+ps.mlf.prof.obs <- ps.mlf.prof.obs %>% ps_filter(Timepoint == "T1" | 
+                                           is.na(Timepoint))
+# Convert to data frame if needed
+mlf_df <- as.data.frame(sample_data(ps.mlf.prof.obs))
+
+# Identify samples from each nostril
+left_samples <- rownames(mlf_df[mlf_df$Nostril == "Left", ])
+right_samples <- rownames(mlf_df[mlf_df$Nostril == "Right", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mlf.balanced.obs <- prune_samples(balanced_samples, ps.mlf.prof.obs)
+
+# Check the new distribution
+table(sample_data(ps.mlf.balanced.obs)$Nostril)
+
+# Check the current "Nostril" sample sizes after pruning
+nostril_table <- table(sample_data(ps.mlf.balanced.obs)$Nostril)
+left_count <- nostril_table["Left"]
+right_count <- nostril_table["Right"]
+
+# Trim additional "Right" samples if necessary
+if (right_count > left_count) {
+  # Randomly remove excess "Right" nostril samples
+  excess_right_samples <- setdiff(right_samples_sub, left_samples)
+  trimmed_right_samples <- sample(excess_right_samples, size = left_count)
+  
+  # Create a final balanced list
+  final_balanced_samples <- c(left_samples, trimmed_right_samples)
+  
+  # Prune the phyloseq object again
+  ps.mlf.balanced.obs <- prune_samples(final_balanced_samples, ps.mlf.prof.obs)
+}
+
+# Verify balance again
+table(sample_data(ps.mlf.balanced.obs)$Nostril)  # Should now be perfectly balanced
+#Observed
+p2 <- plot_richness(ps.mlf.balanced.obs, x="Nostril", color="Nostril", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = Nostril),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Left", "Right")),
+                     aes(label = ..p.signif..),
+                     method = "t.test",
+                     paired = TRUE,
+                     p.adjust.method = "fdr",
+                     label.y = 415,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Nostril", values = (pal))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.mlf.balanced, x="Nostril", color="Nostril", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Nostril),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Left", "Right")),
+                     aes(label = ..p.signif..), 
+                     method = "t.test",
+                     p.adjust.method = "fdr",
+                     label.y = c(1),
+                     paired=TRUE,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("Nostril", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p3
+
+
+figure_legend <- get_legend(p1)
+
+figure_mlf <- ggarrange(p1, p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "right", legend.grob = figure_legend)
+
+figure_mlf
+
+ggsave(
+  filename    = "Alpha_div_MLF_nostrils.tiff",
+  plot        = figure_mlf,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 11,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+
+
+```
+
+
+# Alpha Diversity:  MTS - Nostrils
+```{r}
+set.seed(202)
+
+# First we use plot_richness to calculate alpha diversity values
+#Calculate relative abundances
+ps.rel.mts2 <- prune_taxa(taxa_sums(ps.rel.mts)>0, ps.rel.mts)
+ps.rel.mts.comp <- microbiome::transform(ps.rel.mts2, "compositional")
+
+
+p <- plot_richness(ps.rel.mts2, x="Sample_Type", color="Sample_Type", measures=c("Shannon")) 
+
+levels((p$data)$variable)
+
+# Subset the data values ofr the Shannon indices
+data <- subset((p$data), variable== "Shannon")
+
+ggdensity(data$value, 
+          main = "Density plot of Shannon diversity",
+          xlab = "diversity")
+
+# or Q-Q plot
+ggqqplot(data$value)
+
+# Visual inspection, described in the previous section, is usually unreliable. It's possible to use a significance test comparing the sample distribution to a normal one in order to ascertain whether data show or not a serious deviation from normality.
+
+# Shapiro-Wilk's method is widely recommended for normality test and it provides better power than K-S. It is based on the correlation between the data and the corresponding normal scores.
+shapiro.test(data$value) #Shannon
+#W = 0.96762, p-value = 0.04671
+
+#  does not follow normal distribution
+
+```
+
+
+
+```{r Shannon boxplot mts}
+set.seed(202)
+
+#We need to filter out the extra timepoints
+ps.mts.proff <- ps.rel.mts2
+
+ps.mts.prof.df <- sample_data(ps.mts.proff)
+# Identify samples from each nostril
+left_samples <- rownames(ps.mts.prof.df[ps.mts.prof.df$Nostril == "Left", ])
+right_samples <- rownames(ps.mts.prof.df[ps.mts.prof.df$Nostril == "Right", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(left_samples, length(right_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(right_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mts.balanced <- prune_samples(balanced_samples, ps.mts.proff)
+
+# Check the new distribution
+table(sample_data(ps.mts.balanced)$Nostril)
+
+# comparisons
+#my_comparisons <- list( c("H_Control", "H_ILI"), c("B_Control", "B_ILI"), c("V_Control", "V_ILI"))
+my_comparisons <- list(c("Left", "Right"))
+
+pal <- c(Left="plum3",Right="slategray3")
+theme_set(theme_bw())
+
+# only significant comparison
+#my_comparisons <- list( c("Control", "B"), c("H", "B"))
+#Shannon
+p1 <- plot_richness(ps.mts.balanced, x="Nostril",color="Nostril", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = Nostril),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal, width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(
+    comparisons = list(c("Left", "Right")),
+    aes(label = ..p.signif..), 
+    method = "wilcox.test",
+    paired = TRUE,
+    p.adjust.method = "fdr",
+    label.y = 3.4, 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Nostril", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p1
+
+#for the observed
+ps.mts.prof.obs <- ps.nasal %>% ps_filter(Sample_Type =="MTS")
+table(as.data.frame(sample_data(ps.mts.prof.obs))$Nostril)
+
+
+# Convert to data frame if needed
+mts_df <- as.data.frame(sample_data(ps.mts.prof.obs))
+
+# Identify samples from each nostril
+left_samples <- rownames(mts_df[mts_df$Nostril == "Left", ])
+right_samples <- rownames(mts_df[mts_df$Nostril == "Right", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mts.balanced.obs <- prune_samples(balanced_samples, ps.mts.prof.obs)
+
+# Check the new distribution
+table(sample_data(ps.mts.balanced.obs)$Nostril)
+#Observed
+p2 <- plot_richness(ps.mts.balanced.obs, x="Nostril", color="Nostril", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = Nostril),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot( width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Left", "Right")),
+                     aes(label = ..p.signif..),
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     paired = TRUE,
+                     label.y = 255,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Nostril", values = (pal))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.mts.balanced, x="Nostril", color="Nostril", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Nostril),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Left", "Right")),
+                     aes(label = ..p.signif..), 
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     label.y = c(1.1),
+                     paired=TRUE,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("Nostril", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text( size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p3
+
+
+figure_legend <- get_legend(p1)
+
+figure_mts <- ggarrange(p1, p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "right", legend.grob = figure_legend)
+
+figure_mts
+
+
+ggsave(
+  filename    = "Alpha_div_MTS_nostrils.tiff",
+  plot        = figure_mts,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 11,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+
+# Alpha Diversity: All Nose Sample Types
+```{r}
+set.seed(202)
+
+ps.rel.nose2 <- prune_taxa(taxa_sums(ps.rel.nose)>0, ps.rel.nose)
+ps.rel.nose.comp <- microbiome::transform(ps.rel.nose2, "compositional")
+# First we use plot_richness to calculate alpha diversity values
+p <- plot_richness(ps.rel.nose2, x="Sample_Type", color="Sample_Type", measures=c("Shannon")) 
+
+levels((p$data)$variable)
+
+# Subset the data values ofr the Shannon indices
+data <- subset((p$data), variable== "Shannon")
+
+ggdensity(data$value, 
+          main = "Density plot of Shannon diversity",
+          xlab = "diversity")
+
+# or Q-Q plot
+ggqqplot(data$value)
+
+# Visual inspection, described in the previous section, is usually unreliable. It's possible to use a significance test comparing the sample distribution to a normal one in order to ascertain whether data show or not a serious deviation from normality.
+
+# Shapiro-Wilk's method is widely recommended for normality test and it provides better power than K-S. It is based on the correlation between the data and the corresponding normal scores.
+shapiro.test(data$value) #Shannon
+#W = 0.97751, p-value = 0.009633-07
+# they do not follow normal distribution
+
+```
+
+
+
+```{r Shannon boxplott}
+set.seed(202)
+
+ps.rel.nose2@sam_data$Sample_Type <- factor(ps.rel.nose2@sam_data$Sample_Type,
+                                             levels = c("NPS", "MTS", "MLF"))
+
+
+# Step 1: Extract metadata
+metadata <- as.data.frame(sample_data(ps.rel.nose2))
+metadata <- data.frame(metadata)
+# Step 2: Identify common IDs across MTS, MLF, and NP
+ids_mts <- metadata %>% filter(Sample_Type == "MTS") %>% pull(ID) %>% unique()
+ids_mlf <- metadata %>% filter(Sample_Type == "MLF") %>% pull(ID) %>% unique()
+ids_np  <- metadata %>% filter(Sample_Type == "NPS")  %>% pull(ID) %>% unique()
+
+# Find common IDs present in all three sample types
+common_ids <- Reduce(intersect, list(ids_mts, ids_mlf, ids_np))
+
+# Step 3: Filter metadata to only include common IDs
+filtered_metadata <- metadata %>%
+  filter(ID %in% common_ids)
+
+# Step 4: Randomly select either Left or Right for MTS and MLF (one per ID)
+set.seed(123)  # For reproducibility
+
+selected_samples_mts <- filtered_metadata %>%
+  filter(Sample_Type == "MTS") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+selected_samples_mlf <- filtered_metadata %>%
+  filter(Sample_Type == "MLF") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+# Step 5: Keep NP samples unchanged (only for common IDs)
+selected_samples_np <- filtered_metadata %>%
+  filter(Sample_Type == "NPS")
+
+# Step 6: Combine all selected samples
+selected_samples <- bind_rows(selected_samples_mts, selected_samples_mlf, selected_samples_np)
+rownames(selected_samples) <- selected_samples$sample_identifier
+
+# Step 7: Subset the phyloseq object based on the selected samples
+ps.nose.prof.filtered <- prune_samples(
+  sample_names(ps.rel.nose2) %in% rownames(selected_samples),
+  ps.rel.nose2
+)
+
+# Step 8: Filter to keep only Timepoint T1 (or NA)
+ps.nose.prof.filtered <- ps.nose.prof.filtered
+
+# Step 9: Reorder sample_type factor levels
+ps.nose.prof.filtered@sam_data$Sample_Type <- factor(
+  ps.nose.prof.filtered@sam_data$Sample_Type,
+  levels = c("NPS", "MTS", "MLF")
+)
+
+# 
+table(sample_data(ps.nose.prof.filtered)$Sample_Type)
+length(unique(sample_data(ps.nose.prof.filtered)$ID))  # Should match the number of common IDs
+
+
+# comparisons
+#my_comparisons <- list( c("H_Control", "H_ILI"), c("B_Control", "B_ILI"), c("V_Control", "V_ILI"))
+my_comparisons <- list(c("NPS", "MTS"), c("NPS", "MLF"), c("MLF","MTS"))
+
+#pal <- c("#A6CEE3","#1F78B4")
+theme_set(theme_bw())
+
+# only significant comparison
+#my_comparisons <- list( c("Control", "B"), c("H", "B"))
+#Shannon
+p1 <- plot_richness(ps.nose.prof.filtered, x="Sample_Type",color="Sample_Type", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = sample_type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot( width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(values = pcoa_colors) +
+  scale_fill_manual(values = pcoa_colors) +
+  stat_compare_means(
+    comparisons = my_comparisons,
+    aes(label = ..p.signif..), 
+    method = "wilcox.test",p.adjust.method = "fdr",
+    paired = TRUE,
+    label.y = c(3.2, 3, 2.8), 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Sample Type", values = (pcoa_colors))
+p1
+
+
+#for the observed
+sel <- c("MTS", "NPS", "MLF")
+ps.nose.prof.obs <- ps.nasal %>% ps_filter(Sample_Type %in% sel)
+# #We need to filter out the extra timepoints
+ps.nose.prof.obs <- ps.nose.prof.obs 
+# Step 1: Extract metadata
+metadata <- as.data.frame(sample_data(ps.nose.prof.obs))
+metadata <- data.frame(metadata)
+# Step 2: Identify common IDs across MTS, MLF, and NP
+ids_mts <- metadata %>% filter(Sample_Type == "MTS") %>% pull(ID) %>% unique()
+ids_mlf <- metadata %>% filter(Sample_Type == "MLF") %>% pull(ID) %>% unique()
+ids_np  <- metadata %>% filter(Sample_Type == "NPS")  %>% pull(ID) %>% unique()
+
+# Find common IDs present in all three sample types
+common_ids <- Reduce(intersect, list(ids_mts, ids_mlf, ids_np))
+
+# Step 3: Filter metadata to only include common IDs
+filtered_metadata <- metadata %>%
+  filter(ID %in% common_ids)
+
+# Step 4: Randomly select either Left or Right for MTS and MLF (one per ID)
+set.seed(123)  # For reproducibility
+
+selected_samples_mts <- filtered_metadata %>%
+  filter(Sample_Type == "MTS") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+selected_samples_mlf <- filtered_metadata %>%
+  filter(Sample_Type == "MLF") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+# Step 5: Keep NP samples unchanged (only for common IDs)
+selected_samples_np <- filtered_metadata %>%
+  filter(Sample_Type == "NPS")
+
+# Step 6: Combine all selected samples
+selected_samples <- bind_rows(selected_samples_mts, selected_samples_mlf, selected_samples_np)
+rownames(selected_samples) <- selected_samples$sample_identifier
+
+# Step 7: Subset the phyloseq object based on the selected samples
+ps.nose.prof.filtered.obs <- prune_samples(
+  sample_names(ps.nose.prof.obs) %in% rownames(selected_samples),
+  ps.nose.prof.obs
+)
+
+
+
+# Step 9: Reorder sample_type factor levels
+ps.nose.prof.filtered.obs@sam_data$Sample_Type <- factor(
+  ps.nose.prof.filtered.obs@sam_data$Sample_Type,
+  levels = c("NPS", "MTS", "MLF")
+)
+
+# 
+table(sample_data(ps.nose.prof.filtered.obs)$Sample_Type)
+length(unique(sample_data(ps.nose.prof.filtered)$ID)) 
+
+#Observed
+p2 <- plot_richness(ps.nose.prof.filtered.obs, x="Sample_Type", color="Sample_Type", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = sample_type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot( width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = my_comparisons,
+                     aes(label = ..p.signif..),
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     label.y = c(420, 390, 360),
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Sample Type", values = (pcoa_colors))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.nose.prof.filtered, x="Sample_Type", color="Sample_Type", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Sample_Type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot( width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = my_comparisons,
+                     aes(label = ..p.signif..), 
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     paired=TRUE,
+                     label.y = c(1.1, 1, 0.9),
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("Sample Type", values = (pcoa_colors))
+p3
+
+
+figure_legend <- get_legend(p1)
+
+figure_1 <- ggarrange(p1,  p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "right", legend.grob = figure_legend)
+
+figure_1
+ggsave(
+  filename    = "Alpha_div_Nasal_Samples.tiff",
+  plot        = figure_1,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+
+
+# Alpha Diversity: OPS & Saliva
+```{r}
+set.seed(202)
+
+#Calculate relative abundances
+ps.rel.oral2 <- prune_taxa(taxa_sums(ps.rel.oral)>0, ps.rel.oral)
+ps.rel.oral.comp <- microbiome::transform(ps.rel.oral2, "compositional")
+# First we use plot_richness to calculate alpha diversity values
+p <- plot_richness(ps.rel.oral2, x="Sample_Type", color="Sample_Type", measures=c("Shannon")) 
+
+levels((p$data)$variable)
+
+# Subset the data values ofr the Shannon indices
+data <- subset((p$data), variable== "Shannon")
+
+ggdensity(data$value, 
+          main = "Density plot of Shannon diversity",
+          xlab = "diversity")
+
+# or Q-Q plot
+ggqqplot(data$value)
+
+# Visual inspection, described in the previous section, is usually unreliable. It's possible to use a significance test comparing the sample distribution to a normal one in order to ascertain whether data show or not a serious deviation from normality.
+
+# Shapiro-Wilk's method is widely recommended for normality test and it provides better power than K-S. It is based on the correlation between the data and the corresponding normal scores.
+shapiro.test(data$value) #Shannon
+#W = 0.98047, p-value = 0.2603
+# not normally distributed?
+
+```
+
+
+```{r, fig.width=13, fig.height=9}
+set.seed(202)
+
+# Step 1: Extract metadata
+metadata <- as.data.frame(sample_data(ps.rel.oral2))
+metadata <- data.frame(metadata)
+# Step 2: Identify common IDs across MTS, MLF, and NP
+ids_ops <- metadata %>% filter(Sample_Type == "OPS") %>% pull(ID) %>% unique()
+ids_saliva <- metadata %>% filter(Sample_Type == "Saliva") %>% pull(ID) %>% unique()
+
+
+# Find common IDs present in all three sample types
+common_ids <- Reduce(intersect, list(ids_ops, ids_saliva))
+
+# Step 3: Filter metadata to only include common IDs
+filtered_metadata <- metadata %>%
+  filter(ID %in% common_ids)
+
+# Step 4: Randomly select either Left or Right for MTS and MLF (one per ID)
+set.seed(123)  # For reproducibility
+
+selected_samples_ops <- filtered_metadata %>%
+  filter(Sample_Type == "OPS") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+selected_samples_saliva <- filtered_metadata %>%
+  filter(Sample_Type == "Saliva") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+
+
+# Step 6: Combine all selected samples
+selected_samples <- bind_rows(selected_samples_ops, selected_samples_saliva)
+rownames(selected_samples) <- selected_samples$sample_identifier
+
+# Step 7: Subset the phyloseq object based on the selected samples
+ps.oral.prof.filtered <- prune_samples(
+  sample_names(ps.rel.oral2) %in% rownames(selected_samples),
+  ps.rel.oral2
+)
+
+
+# Step 9: Reorder sample_type factor levels
+ps.oral.prof.filtered@sam_data$Sample_Type <- factor(
+  ps.oral.prof.filtered@sam_data$Sample_Type,
+  levels = c("OPS", "Saliva")
+)
+
+# 
+table(sample_data(ps.oral.prof.filtered)$Sample_Type)
+length(unique(sample_data(ps.oral.prof.filtered)$ID))  # Should match the number of common IDs
+
+
+
+
+# comparisons
+my_comparisons <- list(c("OPS", "Saliva"))
+
+pal <- c(OPS ="#BC7C7C", Saliva="#8ABFA3")
+theme_set(theme_bw())
+
+# only significant comparison
+#my_comparisons <- list( c("Control", "B"), c("H", "B"))
+#Shannon
+p1 <- plot_richness(ps.oral.prof.filtered, x="Sample_Type",color="Sample_Type", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = Sample_Type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal, width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(
+    comparisons = list(c("OPS", "Saliva")),
+    aes(label = ..p.signif..), 
+    method = "wilcox.test",p.adjust.method = "fdr",
+    paired = TRUE,
+    label.y = 3.7, 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Sample Type", values = (pal))
+p1
+
+#for the observed
+ps.oral.prof.obs <- ps.oral 
+table(as.data.frame(sample_data(ps.mts.prof.obs))$Nostril)
+
+
+
+ps.oral.prof.obs <- ps.oral.prof.obs %>% ps_filter(Sample_Type %in% c("OPS", "Saliva"))
+
+# Convert to data frame if needed
+oral_df <- as.data.frame(sample_data(ps.oral.prof.obs))
+
+# Identify samples from each nostril
+ops_samples <- rownames(oral_df[oral_df$Sample_Type == "OPS", ])
+saliva_samples <- rownames(oral_df[oral_df$Sample_Type == "Saliva", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(saliva_samples, length(ops_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(ops_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.oral.balanced.obs <- prune_samples(balanced_samples, ps.oral.prof.obs)
+
+# Check the new distribution
+table(sample_data(ps.oral.balanced.obs)$Nostril)
+#Observed
+p2 <- plot_richness(ps.oral.balanced.obs, x="Sample_Type", color="Sample_Type", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = Sample_Type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot( width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("OPS", "Saliva")),
+                     aes(label = ..p.signif..),
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     paired = TRUE,
+                     label.y = 255,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Sample_Type", values = (pal))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.oral.prof.filtered, x="Sample_Type", color="Sample_Type", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Sample_Type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("OPS", "Saliva")),
+                     aes(label = ..p.signif..), 
+                     method = "wilcox.test",
+                     label.y = c(0.95),
+                     paired=TRUE,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("Sample_Type", values = (pal))
+p3
+
+
+figure_legend <- get_legend(p1)
+
+figure_oral <- ggarrange(p1, p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "right", legend.grob = figure_legend)
+
+figure_oral
+
+ggsave(
+  filename    = "Alpha_div_Oral_Samples.tiff",
+  plot        = figure_oral,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+# Alpha Diversity: All Sample Types 
+```{r}
+set.seed(202)
+#Calculate relative abundances
+ps.rel.prof2 <- prune_taxa(taxa_sums(ps.rel.prof)>0, ps.rel.prof)
+ps.rel.prof.comp <- microbiome::transform(ps.rel.prof2, "compositional")
+# First we use plot_richness to calculate alpha diversity values
+p <- plot_richness(ps.rel.prof2, x="Sample_Type", color="Sample_Type", measures=c("Shannon")) 
+
+levels((p$data)$variable)
+
+# Subset the data values ofr the Shannon indices
+data <- subset((p$data), variable== "Shannon")
+
+ggdensity(data$value, 
+          main = "Density plot of Shannon diversity",
+          xlab = "diversity")
+
+# or Q-Q plot
+ggqqplot(data$value)
+
+# Visual inspection, described in the previous section, is usually unreliable. It's possible to use a significance test comparing the sample distribution to a normal one in order to ascertain whether data show or not a serious deviation from normality.
+
+# Shapiro-Wilk's method is widely recommended for normality test and it provides better power than K-S. It is based on the correlation between the data and the corresponding normal scores.
+shapiro.test(data$value) #Shannon
+#W = 0.95444, p-value = 9.108e-07
+#  not normally distributed
+
+```
+
+```{r}
+# 1. collapse each to genus if you like, or leave ASV-level:
+#    (here I’ll leave them ASV-level)
+# 2. prefix the ASV names so they never collide
+taxa_names(ps.nose.og) <- paste0("Nose__", taxa_names(ps.nose.og))
+taxa_names(ps.oral.og) <- paste0("Oral__", taxa_names(ps.oral.og))
+
+# 3. now merge
+ps.both2 <- merge_phyloseq(ps.nose.og, ps.oral.og)
+
+
+
+```
+
+
+```{r, fig.width=13, fig.height=9}
+set.seed(202)
+
+# Step 1: Extract metadata
+metadata <- as.data.frame(sample_data(ps.rel.prof2))
+metadata <- data.frame(metadata)
+table(metadata$Sample_Type)
+length(unique(metadata$ID))             # total participants
+table(table(metadata$ID))  
+
+# Step 2: Identify common IDs across MTS, MLF, and NP
+ids_mts <- metadata %>% filter(Sample_Type == "MTS") %>% pull(ID) %>% unique()
+ids_mlf <- metadata %>% filter(Sample_Type == "MLF") %>% pull(ID) %>% unique()
+ids_nps  <- metadata %>% filter(Sample_Type == "NPS")  %>% pull(ID) %>% unique()
+ids_ops <- metadata %>% filter(Sample_Type == "OPS") %>% pull(ID) %>% unique()
+ids_saliva <- metadata %>% filter(Sample_Type == "Saliva") %>% pull(ID) %>% unique()
+# Pairwise overlaps
+pairwise_overlaps <- list(
+  NPS_MTS   = length(intersect(ids_nps, ids_mts)),
+  NPS_MLF   = length(intersect(ids_nps, ids_mlf)),
+  NPS_OPS   = length(intersect(ids_nps, ids_ops)),
+  NPS_Saliva= length(intersect(ids_nps, ids_saliva)),
+  MTS_MLF   = length(intersect(ids_mts, ids_mlf)),
+  MTS_OPS   = length(intersect(ids_mts, ids_ops)),
+  MTS_Saliva= length(intersect(ids_mts, ids_saliva)),
+  MLF_OPS   = length(intersect(ids_mlf, ids_ops)),
+  MLF_Saliva= length(intersect(ids_mlf, ids_saliva)),
+  OPS_Saliva= length(intersect(ids_ops, ids_saliva))
+)
+pairwise_overlaps
+
+# Force Right nostril samples for MLF and MTS
+selected_samples_mlf <- filtered_metadata %>%
+  filter(Sample_Type == "MLF" & Nostril == "Right")
+
+selected_samples_mts <- filtered_metadata %>%
+  filter(Sample_Type == "MTS" & Nostril == "Right")
+
+# Keep NPS, OPS, Saliva unchanged
+selected_samples_nps    <- filtered_metadata %>% filter(Sample_Type == "NPS")
+selected_samples_ops    <- filtered_metadata %>% filter(Sample_Type == "OPS")
+selected_samples_saliva <- filtered_metadata %>% filter(Sample_Type == "Saliva")
+
+# Combine all
+selected_samples <- bind_rows(
+  selected_samples_mlf,
+  selected_samples_mts,
+  selected_samples_nps,
+  selected_samples_ops,
+  selected_samples_saliva
+)
+
+# Count unique IDs
+length(unique(selected_samples$ID))
+
+# Step 2: Identify common IDs across MTS, MLF, and NP
+ids_ops <- metadata %>% filter(Sample_Type == "OPS") %>% pull(ID) %>% unique()
+ids_saliva <- metadata %>% filter(Sample_Type == "Saliva") %>% pull(ID) %>% unique()
+ids_nps <- metadata %>% filter(Sample_Type == "NPS") %>% pull(ID) %>% unique()
+ids_mts <- metadata %>% filter(Sample_Type == "MTS") %>% pull(ID) %>% unique()
+ids_mlf <- metadata %>% filter(Sample_Type == "MLF") %>% pull(ID) %>% unique()
+
+# Find common IDs present in all three sample types
+common_ids <- Reduce(intersect, list(ids_ops, ids_saliva,ids_nps,
+                                     ids_mts,ids_mlf))
+
+# Step 3: Filter metadata to only include common IDs
+filtered_metadata <- metadata %>%
+  filter(ID %in% common_ids)
+
+# Step 4: Randomly select either Left or Right for MTS and MLF (one per ID)
+set.seed(123)  # For reproducibility
+
+selected_samples_ops <- filtered_metadata %>%
+  filter(Sample_Type == "OPS") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+selected_samples_saliva <- filtered_metadata %>%
+  filter(Sample_Type == "Saliva") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+
+selected_samples_nps <- filtered_metadata %>%
+  filter(Sample_Type == "NPS") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+
+selected_samples_mts <- filtered_metadata %>%
+  filter(Sample_Type == "MTS") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+
+
+selected_samples_mlf <- filtered_metadata %>%
+  filter(Sample_Type == "MLF") %>%
+  group_by(ID) %>%
+  sample_n(1) %>%  # Randomly select one sample per ID (Left or Right)
+  ungroup()
+# Step 6: Combine all selected samples
+selected_samples <- bind_rows(selected_samples_ops, selected_samples_saliva,selected_samples_nps,
+                              selected_samples_mts,selected_samples_mlf)
+rownames(selected_samples) <- selected_samples$sample_identifier
+
+# Step 7: Subset the phyloseq object based on the selected samples
+ps.prof.filtered <- prune_samples(
+  sample_names(ps.rel.prof2) %in% rownames(selected_samples),
+  ps.rel.prof2
+)
+
+
+# Step 9: Reorder sample_type factor levels
+ps.prof.filtered@sam_data$Sample_Type <- factor(
+  ps.prof.filtered@sam_data$Sample_Type,
+  levels = c("NPS", "MTS","MLF", "OPS", "Saliva")
+)
+
+# 
+table(sample_data(ps.prof.filtered)$Sample_Type)
+length(unique(sample_data(ps.prof.filtered)$ID))  # Should match the number of common IDs
+
+
+
+
+# comparisons
+my_comparisons <- list(c("NPS", "MTS","MLF", "OPS", "Saliva"))
+
+pal <- pcoa_colors
+theme_set(theme_bw())
+
+# only significant comparison
+#my_comparisons <- list( c("Control", "B"), c("H", "B"))
+#Shannon
+p1 <- plot_richness(ps.prof.filtered, x="Sample_Type",color="Sample_Type", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = Sample_Type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal, width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(name= "Sample Type",values = pal) +
+  scale_fill_manual(name= "Sample Type",values = pal) +
+  stat_compare_means(
+    comparisons = list(c("NPS", "MTS"),
+  c("NPS", "MLF"),
+  c("NPS", "OPS"),
+  c("NPS", "Saliva"),
+  c("MTS", "MLF"),
+  c("MTS", "OPS"),
+  c("MTS", "Saliva"),
+  c("MLF", "OPS"),
+  c("MLF", "Saliva"),
+  c("OPS", "Saliva")),
+    aes(label = ..p.signif..), 
+    method = "wilcox.test",p.adjust.method = "fdr",
+    paired = TRUE,
+    label.y = c(5.1, 4.8, 4.5, 4.1, 3.7, 3.4, 3.2, 3.0, 4.3, 3.8), 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Sample Type",name= "Sample Type", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust = 1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p1
+
+#for the observed
+ps.prof.obs <- ps.both2 
+#view(sample_data(ps.prof.obs))
+table(as.data.frame(sample_data(ps.prof.obs))$sample_type2)
+
+
+
+ps.prof.obs <- ps.prof.obs %>% ps_filter(sample_type2 %in% c("NPS", "MTS","MLF", "OPS", "Saliva"))
+
+# Convert to data frame if needed
+prof_df <- as.data.frame(sample_data(ps.prof.obs))
+
+# Identify samples from each nostril
+ops_samples <- rownames(prof_df[prof_df$sample_type2 == "OPS", ])
+saliva_samples <- rownames(prof_df[prof_df$sample_type2 == "Saliva", ])
+nps_samples <- rownames(prof_df[prof_df$sample_type2 == "NPS", ])
+mts_samples <- rownames(prof_df[prof_df$sample_type2 == "MTS", ])
+mlf_samples <- rownames(prof_df[prof_df$sample_type2 == "MLF", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+# Determine the minimum sample count across groups
+min_count <- min(length(ops_samples), length(saliva_samples),
+                 length(nps_samples), length(mts_samples),
+                 length(mlf_samples))
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Randomly subsample each group to have the same number of samples
+ops_sub <- sample(ops_samples, min_count)
+saliva_sub <- sample(saliva_samples, min_count)
+nps_sub <- sample(nps_samples, min_count)
+mts_sub <- sample(mts_samples, min_count)
+mlf_sub <- sample(mlf_samples, min_count)
+
+# Combine the balanced sample IDs
+balanced_samples <- c(ops_sub, saliva_sub, nps_sub, mts_sub, mlf_sub)
+
+# Prune your phyloseq object to retain only balanced samples
+ps.prof.obs.balanced <- prune_samples(balanced_samples, ps.prof.obs)
+
+# Check the new distribution
+table(sample_data(ps.prof.obs.balanced)$sample_type2)
+#Observed
+p2 <- plot_richness(ps.prof.obs.balanced, x="sample_type2", color="sample_type2", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = sample_type2),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot( width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("NPS", "MTS"),
+  c("NPS", "MLF"),
+  c("NPS", "OPS"),
+  c("NPS", "Saliva"),
+  c("MTS", "MLF"),
+  c("MTS", "OPS"),
+  c("MTS", "Saliva"),
+  c("MLF", "OPS"),
+  c("MLF", "Saliva"),
+  c("OPS", "Saliva")),
+                     aes(label = ..p.signif..),
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     paired = TRUE,
+                     label.y = c(1500, 1400, 1300, 1200, 1150),
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Sample_Type",name= "Sample Type", values = (pal))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.prof.filtered, x="Sample_Type", color="Sample_Type", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Sample_Type),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = median((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(name= "Sample Type", values = pal) +
+  scale_fill_manual(name= "Sample Type",values = pal) +
+  stat_compare_means(comparisons = list(
+  c("NPS", "MTS"),
+  c("NPS", "MLF"),
+  c("NPS", "OPS"),
+  c("NPS", "Saliva"),
+  c("MTS", "MLF"),
+  c("MTS", "OPS"),
+  c("MTS", "Saliva"),
+  c("MLF", "OPS"),
+  c("MLF", "Saliva"),
+  c("OPS", "Saliva")
+),
+                     aes(label = ..p.signif..), 
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     label.y = c(1.45, 1.35, 1.25, 1.15, 1.05, 1, 0.95, 1.4, 1.1, 1.2),
+                     paired=TRUE,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("sample_type2", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45,hjust=1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p3
+
+
+
+
+
+
+
+figure_legend <- get_legend(p1)
+
+figure_all <- ggarrange(p1, p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "bottom", legend.grob = figure_legend)
+
+figure_all
+
+
+ggsave(
+  filename    = "Alpha_div_All_Samples-new.tiff",
+  plot        = figure_all,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 11,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+# MLF: Self vs Professionally Collected Samples (alpha-diversity)
+```{r, fig.width=13, fig.height=9}
+library(gghalves)
+mlf_df <- sample_data(ps.mlf.str.2)
+# Convert to data frame if needed
+mlf_df <- as.data.frame(sample_data(ps.mlf.str.2))
+
+# Identify samples from each nostril
+left_samples <- rownames(mlf_df[mlf_df$Sampling_Strategy == "Self", ])
+right_samples <- rownames(mlf_df[mlf_df$Sampling_Strategy == "Professional", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mlf.balanced <- prune_samples(balanced_samples, ps.mlf.str.2)
+
+# Check the new distribution
+table(sample_data(ps.mlf.balanced)$Sampling_Strategy)
+
+# Check the first few values of the OTU table
+
+# comparisons
+my_comparisons <- list( c("Self", "Professional"))
+
+pal <- sampling_strategy_colors
+theme_set(theme_bw())
+
+# only significant comparison
+#Shannon
+p1 <- plot_richness(ps.mlf.balanced, x="Sampling_Strategy",color="Sampling_Strategy", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal, width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(
+    comparisons = list(c("Self", "Professional")),
+    aes(label = ..p.signif..), 
+    method = "t.test",p.adjust.method = "fdr",
+    paired = TRUE,
+    label.y = 3.6, 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Sampling Strategy", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust=1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p1
+
+
+
+#for the observed
+ps.mlf.prof.obs <- ps.nasal %>% ps_filter(Sample_Type =="MLF")
+table(as.data.frame(sample_data(ps.mlf.prof.obs))$Sampling_Strategy)
+
+# Convert to data frame if needed
+mlf_df <- as.data.frame(sample_data(ps.mlf.prof.obs))
+
+# Identify samples from each nostril
+left_samples <- rownames(mlf_df[mlf_df$Sampling_Strategy == "Self", ])
+right_samples <- rownames(mlf_df[mlf_df$Sampling_Strategy == "Professional", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mlf.balanced.obs <- prune_samples(balanced_samples, ps.mlf.prof.obs)
+
+# Check the new distribution
+table(sample_data(ps.mlf.balanced.obs)$Nostril)
+
+#Observed
+p2 <- plot_richness(ps.mlf.balanced.obs, x="Sampling_Strategy", color="Sampling_Strategy", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Self", "Professional")),
+                     aes(label = ..p.signif..),
+                     method = "t.test",p.adjust.method = "fdr",
+                     paired = TRUE,
+                     label.y = 1015,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Sampling Strategy", values = (pal))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.mlf.balanced, x="Sampling_Strategy", color="Sampling_Strategy", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Self", "Professional")),
+                     aes(label = ..p.signif..), 
+                     method = "t.test",p.adjust.method = "fdr",
+                     label.y = c(1),
+                     paired=TRUE,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("Sampling Strategy", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust=1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p3
+
+
+figure_legend <- get_legend(p1)
+
+figure_mlf_str <- ggarrange(p1, p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "right", legend.grob = figure_legend)
+
+figure_mlf_str
+
+
+
+ggsave(
+  filename    = "Alpha_div_MLF_SampStrat.tiff",
+  plot        = figure_mlf_str,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+```
+
+
+
+
+# MTS: Self vs Professionally Collected Samples (alpha-diversity)
+
+```{r, fig.width=13, fig.height=9}
+library(gghalves)
+mts_df <- sample_data(ps.mts.str.2)
+# Convert to data frame if needed
+mts_df <- as.data.frame(sample_data(ps.mts.str.2))
+
+# Identify samples from each nostril
+left_samples <- rownames(mts_df[mts_df$Sampling_Strategy == "Self", ])
+right_samples <- rownames(mts_df[mts_df$Sampling_Strategy == "Professional", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mts.balanced <- prune_samples(balanced_samples, ps.mts.str.2)
+
+# Check the new distribution
+table(sample_data(ps.mts.balanced)$Sampling_Strategy)
+
+# Check the first few values of the OTU table
+
+# comparisons
+my_comparisons <- list( c("Self", "Professional"))
+
+pal <- sampling_strategy_colors
+theme_set(theme_bw())
+
+# only significant comparison
+#Shannon
+p1 <- plot_richness(ps.mts.balanced, x="Sampling_Strategy",color="Sampling_Strategy", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal, width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(
+    comparisons = list(c("Self", "Professional")),
+    aes(label = ..p.signif..), 
+    method = "wilcox.test",p.adjust.method = "fdr",
+    paired = TRUE,
+    label.y = 3.6, 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Sampling Strategy", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust=1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p1
+
+
+
+#for the observed
+ps.mts.prof.obs <- ps.nasal %>% ps_filter(Sample_Type =="MTS")
+table(as.data.frame(sample_data(ps.mts.prof.obs))$Sampling_Strategy)
+
+# Convert to data frame if needed
+mts_df <- as.data.frame(sample_data(ps.mts.prof.obs))
+
+# Identify samples from each nostril
+left_samples <- rownames(mts_df[mts_df$Sampling_Strategy == "Self", ])
+right_samples <- rownames(mts_df[mts_df$Sampling_Strategy == "Professional", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.mts.balanced.obs <- prune_samples(balanced_samples, ps.mts.prof.obs)
+
+# Check the new distribution
+table(sample_data(ps.mts.balanced.obs)$Sampling_Strategy)
+
+#Observed
+p2 <- plot_richness(ps.mts.balanced.obs, x="Sampling_Strategy", color="Sampling_Strategy", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Self", "Professional")),
+                     aes(label = ..p.signif..),
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     paired = TRUE,
+                     label.y = 915,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Sampling Strategy", values = (pal))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.mts.balanced, x="Sampling_Strategy", color="Sampling_Strategy", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Self", "Professional")),
+                     aes(label = ..p.signif..), 
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     label.y = c(1),
+                     paired=TRUE,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("Sampling Strategy", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust=1,size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p3
+
+
+figure_legend <- get_legend(p1)
+
+figure_mts_str <- ggarrange(p1, p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "right", legend.grob = figure_legend)
+
+figure_mts_str
+
+
+ggsave(
+  filename    = "Alpha_div_MTS_SampStrat.tiff",
+  plot        = figure_mts_str,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+
+```
+
+
+
+
+
+# Saliva: Self vs Professionally Collected Samples (alpha-diversity)
+```{r, fig.width=13, fig.height=9}
+library(gghalves)
+sal_df <- sample_data(ps.saliva.str.2)
+# Convert to data frame if needed
+sal_df <- as.data.frame(sample_data(ps.saliva.str.2))
+
+# Identify samples from each nostril
+left_samples <- rownames(sal_df[sal_df$Sampling_Strategy == "Self", ])
+right_samples <- rownames(sal_df[sal_df$Sampling_Strategy == "Professional", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.sal.balanced <- prune_samples(balanced_samples, ps.saliva.str.2)
+
+# Check the new distribution
+table(sample_data(ps.sal.balanced)$Sampling_Strategy)
+
+# Check the first few values of the OTU table
+
+# comparisons
+#my_comparisons <- list( c("H_Control", "H_ILI"), c("B_Control", "B_ILI"), c("V_Control", "V_ILI"))
+my_comparisons <- list( c("Self", "Professional"))
+
+pal <- sampling_strategy_colors
+theme_set(theme_bw())
+
+# only significant comparison
+#my_comparisons <- list( c("Control", "B"), c("H", "B"))
+#Shannon
+p1 <- plot_richness(ps.sal.balanced, x="Sampling_Strategy",color="Sampling_Strategy", measures="Shannon") 
+p1 <- p1 + 
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal, width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p1$data)$value), linetype = 2, color= "grey") +
+  guides(colour = guide_legend(nrow = 1)) +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(
+    comparisons = list(c("Self", "Professional")),
+    aes(label = ..p.signif..), 
+    method = "wilcox.test",p.adjust.method = "fdr",
+    paired = TRUE,
+    label.y = 3.6, 
+    label.x.npc = 0.2,
+    tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+p1 <- p1 + scale_fill_manual("Sampling Strategy", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust=1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p1
+
+
+
+#for the observed
+ps.sal.prof.obs <- ps.oral %>% ps_filter(Sample_Type =="Saliva")
+table(as.data.frame(sample_data(ps.sal.prof.obs))$Sampling_Strategy)
+
+# Convert to data frame if needed
+sal_df <- as.data.frame(sample_data(ps.sal.prof.obs))
+
+# Identify samples from each nostril
+left_samples <- rownames(sal_df[sal_df$Sampling_Strategy == "Self", ])
+right_samples <- rownames(sal_df[sal_df$Sampling_Strategy == "Professional", ])
+
+# Randomly sample 33 Right nostril samples to match the Left
+set.seed(123)  # For reproducibility
+right_samples_sub <- sample(right_samples, length(left_samples))
+
+# Combine Left samples with the downsampled Right samples
+balanced_samples <- c(left_samples, right_samples_sub)
+
+# Subset the phyloseq object to retain only balanced samples
+ps.sal.balanced.obs <- prune_samples(balanced_samples, ps.sal.prof.obs)
+
+# Check the new distribution
+table(sample_data(ps.sal.balanced.obs)$Sampling_Strategy)
+
+#Observed
+p2 <- plot_richness(ps.sal.balanced.obs, x="Sampling_Strategy", color="Sampling_Strategy", measures="Chao1")
+p2 <- p2 +
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) +
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p2$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Self", "Professional")),
+                     aes(label = ..p.signif..),
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     paired = TRUE,
+                     label.y = 915,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p2 <- p2 + scale_colour_manual("Sampling Strategy", values = (pal))
+p2
+
+#Simpson
+p3 <- plot_richness(ps.sal.balanced, x="Sampling_Strategy", color="Sampling_Strategy", measures="Simpson") 
+p3 <- p3 + 
+  geom_point(aes(color = Sampling_Strategy),
+             position = position_jitter(width = 0.15),
+             size = 2, alpha = 0.25) +
+  geom_boxplot(fill = pal , width = 0.2, outlier.shape = NA,
+               alpha = 0.5) + 
+   geom_half_violin(position = position_nudge(x = 0.15, y = 0),
+                   alpha = 0.25, side = "r") +
+  geom_hline(yintercept = mean((p3$data)$value), linetype = 2, color= "grey") +
+  scale_colour_manual(values = pal) +
+  scale_fill_manual(values = pal) +
+  stat_compare_means(comparisons = list(c("Self", "Professional")),
+                     aes(label = ..p.signif..), 
+                     method = "wilcox.test",p.adjust.method = "fdr",
+                     label.y = c(1),
+                     paired=TRUE,
+                     label.x.npc = 0.2, tip.length = 0.01)+
+  theme_biome_utils() + xlab("") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+p3 <- p3 + scale_colour_manual("Sampling Strategy", values = (pal))+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_text(angle=45, hjust=1, size = 22),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )
+p3
+
+
+figure_legend <- get_legend(p1)
+
+figure_sal_str <- ggarrange(p1, p3,
+                    labels = c(" "),
+                    ncol = 2, nrow = 1,
+                    common.legend = TRUE, legend = "right", legend.grob = figure_legend)
+
+figure_sal_str
+
+
+ggsave(
+  filename    = "Alpha_div_Saliva_SampStrat.tiff",
+  plot        = figure_sal_str,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 10,      # in inches
+  height      = 8,      # adjust as needed
+  units       = "in",
+  compression = "lzw")
+
+```
+
+```{r}
+
+# 1. Agglomerate at Genus level
+ps.genus <- tax_glom(ps.rel.oral, taxrank = "Genus", NArm = FALSE)
+
+# 2. Overwrite the taxa_names() with the Genus labels
+genus_labels <- tax_table(ps.genus)[, "Genus"]
+taxa_names(ps.genus) <- genus_labels
+
+# 3. Sum abundances and pick top-6
+abundances <- taxa_sums(ps.genus)
+top6 <- sort(abundances, decreasing = TRUE)[1:6]
+
+# 4. Wrap up in a table
+top6_df <- data.frame(
+  Genus     = names(top6),
+  Abundance = as.numeric(top6),
+  row.names = NULL
+)
+top6_df
+```
+
+```{r}
+
+# 1. Agglomerate at Genus level
+ps.genus <- tax_glom(ps.rel.nose, taxrank = "Genus", NArm = FALSE)
+
+# 2. Overwrite the taxa_names() with the Genus labels
+genus_labels <- tax_table(ps.genus)[, "Genus"]
+taxa_names(ps.genus) <- genus_labels
+
+# 3. Sum abundances and pick top-6
+abundances <- taxa_sums(ps.genus)
+top6 <- sort(abundances, decreasing = TRUE)[1:6]
+
+# 4. Wrap up in a table
+top6_df <- data.frame(
+  Genus     = names(top6),
+  Abundance = as.numeric(top6),
+  row.names = NULL
+)
+top6_df
+```
+
+# Boxplots: Top 6 Genera per URT Region
+```{r, fig.width=14, fig.height=11}
+# Convert the phyloseq object to a data frame
+df <- psmelt(ps.rel.oral)
+
+# Define your top 5 genera
+top_genera <- c("Streptococcus", "Prevotella_7", "Veillonella", "Haemophilus", "Rothia","Actinomyces")
+
+# Filter the data frame for these genera
+df_top <- subset(df, Genus %in% top_genera)
+df_top$Genus <- factor(df_top$Genus, levels = top_genera)
+
+
+# Compute common IDs across sample types
+common_ids <- Reduce(intersect, split(df_top$ID, df_top$Sample_Type))
+
+# Filter the data for only those IDs
+df_common <- df_top %>% filter(ID %in% common_ids)
+
+# Define the comparison: adjust the group names as needed.
+# If you have exactly two sample types per facet (e.g., "NPS" and "MLF"):
+comp_list <- list(c("OPS", "Saliva"))
+
+# Create faceted boxplot and add significance bracket with stars in the middle
+top5_plot_oral <- ggplot(df_common, aes(x = Sample_Type, y = Abundance, fill = Sample_Type)) +
+  geom_boxplot() +
+  facet_wrap(~ Genus) +
+  scale_fill_manual(name = "Sample Type", values = pcoa_colors) +
+  theme_bw() +
+  labs(x = "", y = "Relative Abundance (%)") +
+   theme(
+    legend.position = "right",
+    strip.text = element_text(size = 16, face = "italic")  # bigger & italic facet labels
+  ) +
+  stat_compare_means(comparisons = comp_list,
+                     method = "wilcox.test", p.adjust.method = "fdr",
+                     paired = TRUE, 
+                     label = "p.signif", 
+                     tip.length = 0.01,
+                     size=5, y.position = c(42, 42, 42, 42, 42, 42)   )
+
+top5_plot_oral
+
+
+ggsave(
+  filename    = "Top_6_oral_cavity.tiff",
+  plot        = top5_plot_oral,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 11,      # in inches
+  height      = 13,      # adjust as needed
+  units       = "in",
+  compression = "lzw"
+)
+```
+
+
+# Boxplots: Top 6 Genera per URT Region
+Comparisons of the samples were made on the core taxa and not on top abundant. 
+```{r, fig.width=14, fig.height=12}
+# Convert the phyloseq object to a data frame
+df <- psmelt(ps.rel.nose)
+
+# Define your top 5 genera
+top_genera <- c("Corynebacterium", "Staphylococcus","Dolosigranulum" ,"Lawsonella", "Streptococcus","Moraxella")
+
+# Filter the data frame for these genera
+df_top <- subset(df, Genus %in% top_genera)
+df_top$Genus <- factor(df_top$Genus, levels = top_genera)
+
+# Compute common IDs across sample types
+df_top_2 <- df_top %>% 
+  filter(Nostril=="Right"|is.na(Nostril))
+
+
+common_ids <- Reduce(intersect, split(df_top_2$ID, df_top_2$Sample_Type))
+
+# Filter the data for only those IDs
+df_common <- df_top_2 %>% filter(ID %in% common_ids)
+df_common <- df_common %>%
+  mutate(Sample_Type = factor(Sample_Type, levels = c("NPS","MTS","MLF")))
+# Define the comparison: adjust the group names as needed.
+# If you have exactly two sample types per facet (e.g., "NPS" and "MLF"):
+comp_list <- list(c("NPS", "MTS"),
+                  c("NPS","MLF"),
+                  c("MTS","MLF"))
+# Create boxplots with sample type on x-axis and relative abundance on y-axis, faceted by Genus
+top5_plot_nasal <- ggplot(df_common, aes(x = Sample_Type, y = Abundance, fill=Sample_Type)) +
+  geom_boxplot() +
+  facet_wrap(~ Genus, scales = "free_y") +
+  scale_fill_manual(name = "Sample Type", values = pcoa_colors) +
+  theme_bw() +
+  labs(x = "", y = "Relative Abundance (%)") +
+  theme(
+    legend.position = "right",
+    strip.text = element_text(size = 16, face = "italic")  # bigger & italic facet labels
+  ) +
+  stat_compare_means(
+    comparisons = comp_list,
+    method = "wilcox.test", p.adjust.method = "fdr",
+    paired = TRUE,
+    label = "p.signif",
+    tip.length = 0.01,
+    size = 5
+  )
+
+top5_plot_nasal
+
+
+
+
+ggsave(
+  filename    = "Top_6_nasal_cavity.tiff",
+  plot        = top5_plot_nasal,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 11,      # in inches
+  height      = 13,      # adjust as needed
+  units       = "in",
+  compression = "lzw"
+)
+```
+
+
+
+```{r, fig.width=15, fig.height=18}
+library(grid)
+library(gridExtra)
+# combined_plot <- grid.arrange(top5_plot_oral, top5_plot_nasal, nrow = 2)
+top5_plot_nasal <- top5_plot_nasal+
+    theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 28),
+    axis.text.x      = element_text( size = 25),
+    axis.text.y      = element_text(size = 25),
+    strip.text       = element_text(size = 23, face = "italic"),  # facet labels
+    legend.title     = element_text(size = 26),
+    legend.text      = element_text(size = 25)
+  )
+
+top5_plot_oral <- top5_plot_oral+
+   theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 28),
+    axis.text.x      = element_text( size = 25),
+    axis.text.y      = element_text(size = 25),
+    strip.text       = element_text(size = 23, face = "italic"),  # facet labels
+    legend.title     = element_text(size = 26),
+    legend.text      = element_text(size = 25))
+
+nasal_label <- textGrob("Nasal Cavity",
+                        rot = 90,
+                        x   = unit(0.8, "npc"),   # move 80% of the way across its cell
+                        gp  = gpar(fontsize =28, fontface = "bold"))
+oral_label  <- textGrob("Oral Cavity",
+                        rot = 90,
+                        x   = unit(0.8, "npc"),
+                        gp  = gpar(fontsize = 28, fontface = "bold"))
+
+# 2) Tweak the widths so the label column is much narrower:
+row1 <- arrangeGrob(nasal_label, top5_plot_nasal, ncol = 2,
+                    widths = c(0.2, 0.8))   # 20% for the label, 80% for the plot
+row2 <- arrangeGrob(oral_label,  top5_plot_oral,  ncol = 2,
+                    widths = c(0.2, 0.8))
+
+# Combine rows into one figure
+combined_plot<- grid.arrange(row1, row2, nrow = 2)
+
+
+ggsave(
+  filename    = "Top_6_with_regions2.tiff",
+  plot        = combined_plot,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 18,      # in inches
+  height      = 23,      # adjust as needed
+  units       = "in",
+  compression = "lzw"
+)
+```
+
+
+# Top 10 most abudant
+```{r}
+get_top10_by_genus <- function(ps, type, sampvar = "Sample_Type"){
+  # pull sample data into a data.frame
+  sd <- as(sample_data(ps), "data.frame")
+  # subset sample names where that column == type
+  samples_to_keep <- rownames(sd)[ sd[[sampvar]] == type ]
+  # prune the phyloseq object
+  ps_sub <- prune_samples(samples_to_keep, ps)
+  
+  # get ASV sums
+  asv_sums <- taxa_sums(ps_sub)
+  # get genus labels
+  genera  <- as.character(tax_table(ps_sub)[, "Genus"])
+  
+  # drop unclassified
+  keep    <- !is.na(genera) & genera != ""
+  asv_sums <- asv_sums[keep]
+  genera   <- genera[keep]
+  
+  # sum by genus
+  genus_totals <- tapply(asv_sums, genera, sum)
+  
+  # pick top 10
+  top10 <- sort(genus_totals, decreasing = TRUE)[1:10]
+  data.frame(Genus = names(top10),
+             Abundance = as.numeric(top10),
+             row.names = NULL)
+}
+
+# 
+top10_sal <- get_top10_by_genus(ps.rel.oral, "Saliva", sampvar = "Sample_Type")
+top10_op  <- get_top10_by_genus(ps.rel.oral, "OPS",    sampvar = "Sample_Type")
+
+top10_sal
+top10_op
+```
+
+
+## Boxplots: Top 6 Genera per URT Region (colored by genera)
+```{r, fig.width=13, fig.height=10}
+# Convert the phyloseq object to a data frame
+
+# Define your top 5 genera
+# top_genera <- c("Streptococcus", "Rothia", "Haemophilus", "Leptotrichia", "Neisseria","Gemella", "Gemella", "Fusobacterium", "Porphyromonas", "Granulicatella", "")
+# Convert the phyloseq object to a data frame
+df <- psmelt(ps.rel.oral)
+
+top_genera_op <- c("Streptococcus", "Prevotella_7",  "Veillonella", "Actinomyces","Leptotrichia","Neisseria")
+top_genera_sal <- c("Streptococcus",  "Haemophilus", "Rothia","Neisseria",  "Veillonella","Actinomyces")
+
+
+# Filter the data frame for these genera
+df_op <- subset(df, sample_type == "OP")
+df_op <- subset(df_op, Genus %in% top_genera_op)
+df_op$Genus <- factor(df_op$Genus, levels = top_genera_op)
+
+df_sal <- subset(df, sample_type == "Saliva")
+df_sal <- subset(df_sal, Genus %in% top_genera_sal)
+df_sal$Genus <- factor(df_sal$Genus, levels = top_genera_sal)
+
+# Create boxplots with sample type on x-axis and relative abundance on y-axis, faceted by Genus
+top5_plot_oral_g <- ggplot(df_top, aes(x = Genus, y = Abundance, fill=Genus)) +
+  geom_boxplot() +
+  facet_wrap(~ Sample_Type) +
+  scale_fill_manual(name = "Genus", values = top_genera_cols)+
+  theme_bw() +
+  labs(x = "", y = "Relative Abundance (%)")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))+
+  theme(legend.position = "right")
+
+top5_plot_oral_g
+
+## OP
+
+
+# Create boxplots with sample type on x-axis and relative abundance on y-axis, faceted by Genus
+top6_op <- ggplot(df_op, aes(x = Genus, y = Abundance, fill=Genus)) +
+  geom_boxplot() +
+  facet_wrap(~ Sample_Type) +
+  scale_fill_manual(name = "Genus", values = top_genera_cols)+
+  theme_bw() +
+  labs(x = "", y = "Relative Abundance (%)")+
+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+     axis.text.x = element_blank(),
+    axis.ticks.x     = element_blank(), 
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )+
+  theme(legend.position = "right") +ylim(0,65)
+
+top6_op
+
+
+## Sal
+# Filter the data frame for these genera
+df_top_Sal <- subset(df_sal, Genus %in% top_genera_sal)
+df_top_Sal$Genus <- factor(df_top_Sal$Genus, levels = top_genera_sal)
+
+# Create boxplots with sample type on x-axis and relative abundance on y-axis, faceted by Genus
+top6_sal<- ggplot(df_top_Sal, aes(x = Genus, y = Abundance, fill=Genus)) +
+  geom_boxplot() +
+  facet_wrap(~ Sample_Type) +
+  scale_fill_manual(name = "Genus", values = top_genera_cols)+
+  theme_bw() +
+  labs(x = "", y = "Relative Abundance (%)")+
+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x = element_blank(),
+    axis.ticks.x     = element_blank(), 
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )+
+  theme(legend.position = "right")
+
+top6_sal
+
+# Combine rows into one figure
+
+
+combined_plot_opsal<- grid.arrange(top6_op, top6_sal, nrow = 1)
+
+ggsave(
+  filename    = "Top_6_OPSnSaliva.tiff",
+  plot        = combined_plot_opsal,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 17,      # adjust as needed
+  units       = "in",
+  compression = "lzw"
+)
+```
+
+
+```{r}
+top_genera_all <- c("Streptococcus", "Prevotella_7", "Veillonella", "Actinomyces", 
+                    "Leptotrichia", "Neisseria", "Haemophilus", "Rothia")
+df_op$Genus  <- factor(df_op$Genus, levels = top_genera_all)
+df_sal$Genus <- factor(df_sal$Genus, levels = top_genera_all)
+
+# Add a column to identify sample origin
+df_op$Group <- "OP"
+df_sal$Group <- "Saliva"
+
+# Combine both into one data frame
+df_combined <- rbind(df_op, df_sal)
+
+# Make sure Genus factor has all desired levels
+df_combined$Genus <- factor(df_combined$Genus, levels = top_genera_all)
+top_plot_combined <- ggplot(df_combined, aes(x = Genus, y = Abundance, fill = Genus)) +
+  geom_boxplot() +
+  facet_wrap(~ Group) +  # One panel for OP, one for Saliva
+  scale_fill_manual(name = "Genus", values = top_genera_cols) +
+  theme_bw(base_size = 25) +
+  labs(x = "", y = "Relative Abundance (%)") +
+  theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x      = element_blank(),
+    axis.ticks.x     = element_blank(),
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+    legend.position  = "right"
+  )
+
+top_plot_combined
+
+ggsave("Top_6_OPSnSaliva_combined.tiff", top_plot_combined,
+       device = "tiff", dpi = 300,
+       width = 13, height = 10, units = "in", compression = "lzw")
+```
+
+
+
+## Boxplots: Top 6 Genera per URT Region (colored by genera)
+```{r, fig.width=14, fig.height=10}
+# Convert the phyloseq object to a data frame
+df <- psmelt(ps.rel.nose)
+
+# Define your top 5 genera
+top_genera <- c("Corynebacterium", "Staphylococcus","Dolosigranulum" ,"Lawsonella", "Streptococcus","Moraxella")
+
+# Filter the data frame for these genera
+df_top <- subset(df, Genus %in% top_genera)
+df_top$Genus <- factor(df_top$Genus, levels = top_genera)
+
+# Create boxplots with sample type on x-axis and relative abundance on y-axis, faceted by Genus
+top5_plot_nasal_g <- ggplot(df_top, aes(x = Genus, y = Abundance, fill=Genus)) +
+  geom_boxplot() +
+  facet_wrap(~ Sample_Type) +
+  scale_fill_manual(name = "Genus", values = top_genera_cols)+
+  theme_bw() +
+  labs(x = "", y = "Relative Abundance (%)")+
+  theme_bw(base_size=25)+theme(
+    axis.title       = element_text(size = 25),
+    axis.text.x = element_blank(),
+    axis.ticks.x     = element_blank(), 
+    axis.text.y      = element_text(size = 22),
+    strip.text       = element_text(size = 25),  # facet labels
+    legend.title     = element_text(size = 25),
+    legend.text      = element_text(size = 24),
+  )+
+  theme(legend.position = "right")
+
+top5_plot_nasal_g
+
+
+ggsave(
+  filename    = "Top_6_Nose_Samples.tiff",
+  plot        = top5_plot_nasal_g,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 17,      # adjust as needed
+  units       = "in",
+  compression = "lzw"
+)
+```
+
+
+
+```{r, fig.width=11, fig.height=14}
+
+library(gridExtra)
+library(grid)
+# Create left side labels as grobs (rotated 90 degrees)
+nasal_label <- textGrob("Nasal Cavity", rot = 90, gp = gpar(fontsize = 28, fontface = "bold"))
+oral_label  <- textGrob("Oral Cavity", rot = 90, gp = gpar(fontsize = 28, fontface = "bold"))
+
+# Arrange each row with two columns: label and plot
+row1 <- arrangeGrob(nasal_label, top5_plot_nasal_g, ncol = 2, widths = c(0.1, 0.9))
+row2 <- arrangeGrob(oral_label, top_plot_combined, ncol = 2, widths = c(0.1, 0.9))
+
+# Combine rows into one figure
+combined_plot_g <- grid.arrange(row1, row2, nrow = 2)
+# combined_plot_g <- grid.arrange(top5_plot_nasal_g, top5_plot_oral_g, nrow = 2)
+ggsave(
+  filename    = "Top_6_Genera_Niches.tiff",
+  plot        = combined_plot_g,
+  device      = "tiff",
+  dpi         = 300,
+  width       = 13,      # in inches
+  height      = 17,      # adjust as needed
+  units       = "in",
+  compression = "lzw"
+)
+```
+

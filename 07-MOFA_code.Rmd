@@ -1,0 +1,780 @@
+---
+title: "MOFA analysis"
+output: 
+  html_document:
+    toc: true            # Enable Table of Contents
+    toc_float: true
+    code_folding: "hide"      
+date: "09-09-2025"
+---
+
+```{r Load Packages, include=FALSE}
+# Function to install/load packages:
+
+load_packages <- function(packages) {
+  sapply(packages, function(pkg) {
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+      library(pkg, character.only = TRUE)
+    }
+  })
+}
+
+packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2", 
+              "tidyverse", "ggplot2", "RColorBrewer", "stringr", 
+              "rstatix", "ggpubr", "ggsignif", "FSA",  
+              "readxl", "viridis", "patchwork",   
+              "ggfortify", "factoextra", "pheatmap",
+              "cowplot","coin","psych","cowplot",
+              "phyloseq","microbiome","plyr","hrbrthemes",
+              "RColorBrewer","readr", "decontam", "microbiomeutilities",
+              "DECIPHER", "ape","phangorn", "tibble","utils","MOFA2","microViz",
+              "vegan","mixOmics","data.table")
+
+load_packages(packages)
+
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+
+#  Load datasets
+```{r load ps, message=TRUE}
+
+# Load phyloseq object (microbiome):
+ps <- readRDS("07-ps.for.multiomics.rds")
+
+ps.df <- data.frame(sample_data(ps)) #make dataframe 
+
+table(ps.df$Sample_Type) #count number of sample types
+table(ps.df$Sampling_Method) #count number of sampling methods
+
+ps #print phyloseq object (7171 taxa in 308 samples)
+#-----------------------------------------------------
+
+# Import only LegendPlex data:
+lgnd <- read_excel("02-LegendPlex_data.xlsx")
+library(dplyr)
+lgnd %>%
+  distinct(SampleID, Sample_Type, Analytes) %>%        # one row per sample
+  dplyr::count(Analytes, Sample_Type, name = "n_samples")
+#-----------------------------------------------------
+
+# Import total Abs data:
+total_abs <- read_excel("01-Luminex_Total_Abs_Data.xlsx")
+total_abs %>%
+  distinct(Description, Sample_Type, Analyte) %>%        # one row per sample
+  dplyr::count(Analyte, Sample_Type, name = "n_samples")
+
+
+#-----------------------------------------------------
+
+# Import RespiFinder (multiplex PCR) data:
+
+respifinder <- read_excel("04-antigen_specific_MIA_data.xlsx")
+respifinder <- respifinder %>%
+  mutate(
+    Pathogen_group = case_when(
+      Result %in% c("SARS-CoV2", "Rhino/Entero", "Boca", "Influenza A") ~ "Virus",
+      Result %in% c("C.Pneu", "B.Pert") ~ "Bacterium",
+      is.na(Result) ~ "Negative"
+    )
+  )
+
+resp_flags <- respifinder %>%
+  distinct(SampleID, Pathogen_group) %>%   # one row per sample × group
+  mutate(
+    Virus_pos = Pathogen_group == "Virus",
+    Bact_pos  = Pathogen_group == "Bacterium",
+    Any_pos   = Pathogen_group != "Negative"
+  ) 
+```
+
+
+
+# Data cleanup 
+We will only use Professionally collected samples for the integrated analysis. 
+
+```{r data-cleanup}
+
+ps.prof <- phyloseq::subset_samples(ps, Sampling_Strategy == "Professional")
+ps.prof.df <- data.frame(sample_data(ps.prof))
+
+lgnd.prof <- lgnd %>% filter( Sampling_Strategy == "Professional")
+lgnd.prof <- lgnd.prof %>% mutate(log10_conc = log10(concentration.est))
+# lgnd.prof <- lgnd.prof %>% mutate(log_conc = log(concentration.est))
+lgnd.prof <- lgnd.prof %>%
+  mutate(Sample_Type = recode(Sample_Type, "Mid-turbinate swab" = "MTS"))
+lgnd.prof <- lgnd.prof %>%
+  mutate(Sample_Type = recode(Sample_Type, "Nasopharyngeal swab" = "NPS"))
+lgnd.prof <- lgnd.prof %>%
+  mutate(Sample_Type = recode(Sample_Type, "Oropharyngeal swab" = "OPS"))
+
+total_abs.prof <- total_abs %>% filter( Sampling_Strategy == "Professional")
+
+# Function to replace "OOR <" values with half of the minimum or half of LLOQ if all values are NA
+replace_missing_with_min <- function(x, lloq) {
+  min_val <- min(x, na.rm = TRUE)
+  if (is.finite(min_val)) {
+    return((1/2) * min_val)
+  } else {
+    return((1/2) * lloq)  # Use half of LLOQ if all values are NA
+  }
+}
+
+# Function to replace "OOR >" values with the maximum x2 concentration in range
+replace_missing_with_max <- function(x) {
+  max_val <- max(x, na.rm = TRUE)
+  if (is.finite(max_val)) {
+    return(max_val*2)
+  } else {
+    return(NA)  # If all values are NA, return NA or another desired fallback
+  }
+}
+
+# Apply the functions per isotype and sample type
+total_abs.prof <- total_abs.prof %>%
+  group_by(Analyte, Sample_Type) %>%
+  mutate(
+    concentration = case_when(
+      is.na(Conc_in_Range) & Notes == "OOR <" ~ replace_missing_with_min(Conc_in_Range, LLOQ),
+      is.na(Conc_in_Range) & Notes == "OOR >" ~ replace_missing_with_max(Conc_in_Range),
+      TRUE ~ Conc_in_Range
+    )
+  ) %>%
+  ungroup()
+
+#  Calculate log10 of the new concentration column
+total_abs.prof <- total_abs.prof %>%
+  mutate(log10_conc = log10(concentration))
+```
+
+
+# Build metadata
+```{r}
+# 1. Build metadata starting from LegendPlex professional
+resp_flags_1 <- resp_flags %>% subset(select=c(SampleID, Virus_pos, Bact_pos, Any_pos))
+meta <- lgnd.prof %>%
+  distinct(SampleID, Sample_Type, ID, Biological_Sex, Age_Range, Nostril) %>%
+  left_join(resp_flags_1, by = "SampleID")
+
+# check
+dim(meta)
+table(meta$Sample_Type)
+
+  # MLF    MTS    NPS    OPS Saliva 
+  #   88     88     44     44     40 
+
+```
+
+```{r}
+total_abs.prof <- total_abs.prof %>%
+  dplyr::rename(SampleID = Description)
+
+```
+
+# IDs check
+```{r}
+
+ids_microbe <- sample_names(ps.prof)   # from phyloseq
+ids_cytokine <- unique(lgnd.prof$SampleID)
+ids_igs <- unique(total_abs.prof$SampleID)
+
+# overlap with meta
+table(meta$SampleID %in% ids_microbe)
+table(meta$SampleID %in% ids_cytokine)
+table(meta$SampleID %in% ids_igs)
+
+```
+
+```{r}
+setdiff(meta$SampleID, ids_microbe)   # in meta but not microbiome
+setdiff(meta$SampleID, ids_cytokine)  # in meta but not cytokines
+setdiff(meta$SampleID, ids_igs)       # in meta but not Igs
+
+```
+
+# Find the shared IDs
+```{r}
+integration_ids <- Reduce(intersect, list(
+  meta$SampleID,
+  ids_microbe,
+  ids_cytokine,
+  ids_igs
+))
+
+length(integration_ids)  # should be 264
+```
+
+
+# Subset to these IDs (meta)
+```{r}
+meta_sub <- meta %>% 
+  filter(SampleID %in% integration_ids)
+
+nrow(meta_sub)   #  264
+
+table(meta_sub$Sample_Type)
+
+# MLF    MTS    NPS    OPS Saliva 
+#     69     80     36     44     35 
+meta_sub <- meta_sub %>%
+  mutate(SampleID_site = paste(ID, Sample_Type, sep="_"))
+
+
+```
+## microbiome
+```{r}
+ps.sub <- phyloseq::subset_samples(ps.prof, sample_identifier %in% integration_ids)
+
+# sanity check
+nsamples(ps.sub)   # 264
+```
+
+# legendplex
+```{r}
+lgnd.sub <- lgnd.prof %>%
+  filter(SampleID %in% integration_ids) %>%
+  subset(select=c(SampleID, Analytes, log10_conc))
+
+# wide format (rows = samples, cols = analytes)
+cyto.mat <- tidyr::pivot_wider(lgnd.sub,
+  names_from = Analytes,
+  values_from = log10_conc
+)
+
+# reorder rows to match meta_sub
+cyto.mat <- cyto.mat[match(meta_sub$SampleID, cyto.mat$SampleID), ]
+```
+
+# total Igs
+```{r}
+igs.sub <- total_abs.prof %>%
+  filter(SampleID %in% integration_ids) %>%
+  subset(select=c(SampleID, Analyte, log10_conc))
+
+igs.mat <- tidyr::pivot_wider(igs.sub,
+  names_from = Analyte,
+  values_from = log10_conc
+) 
+
+# reorder rows to match meta_sub
+igs.mat <- igs.mat[match(meta_sub$SampleID, igs.mat$SampleID), ]
+```
+
+# collapse microbiome & CLRS
+```{r}
+library(compositions)
+library(dplyr)
+
+# 1. Aggregate microbiome to Genus level
+ps.prof.genus <- tax_glom(ps.sub, "Genus", NArm = TRUE)
+
+# 2. Relative abundance (%)
+ps.prof.rel <- transform_sample_counts(ps.prof.genus, function(OTU) OTU/sum(OTU) * 100)
+
+# 3. Convert to matrix
+microbe_data <- as.data.frame(otu_table(ps.prof.rel))
+if(taxa_are_rows(ps.prof.rel)) {
+  microbe_data <- t(microbe_data)
+}
+
+# 4. Replace column names with Genus names
+genus_names <- as.character(tax_table(ps.prof.rel)[, "Genus"])
+colnames(microbe_data) <- genus_names
+
+# 5. Filter genera by prevalence (>10%)
+prevalence_filter <- function(x, threshold = 0.1) mean(x > 0) > threshold
+filtered_microbe <- microbe_data[, apply(microbe_data, 2, prevalence_filter)]
+
+# 6. CLR transform
+microbe_data_clr <- as.data.frame(clr(filtered_microbe))
+
+# 7. Add SampleID
+microbe_data_clr$SampleID <- rownames(microbe_data_clr)
+
+# 8. Collapse left/right nostrils → subject × site
+microbe_data_clr <- microbe_data_clr %>%
+  left_join(meta_sub %>% subset(select=c(SampleID, SampleID_site)),
+            by = "SampleID") %>%
+  group_by(SampleID_site) %>%
+  summarise_at(vars(-SampleID), mean, na.rm=TRUE) %>%
+  ungroup()
+
+# 9. Final matrix for MOFA
+X_microbe <- scale(as.matrix(microbe_data_clr[,-1]))
+rownames(X_microbe) <- microbe_data_clr$SampleID_site
+
+```
+
+
+# collapse legendplex
+```{r}
+# start from your long lgnd.sub (SampleID, Analytes, log10_conc)
+cyto.mat.collapsed <- lgnd.sub %>%
+  dplyr::left_join(meta_sub %>% dplyr::select(SampleID, SampleID_site), by = "SampleID") %>%
+  dplyr::group_by(SampleID_site, Analytes) %>%
+  dplyr::summarise(log10_conc = mean(log10_conc, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_wider(names_from = Analytes, values_from = log10_conc)
+
+# matrix + scaling
+X_cytokine <- as.data.frame(cyto.mat.collapsed)
+rownames(X_cytokine) <- X_cytokine$SampleID_site
+X_cytokine <- as.matrix(X_cytokine[ , -1, drop = FALSE])
+X_cytokine <- scale(X_cytokine)
+```
+
+# collapse total antibodies
+```{r}
+igs.mat.collapsed <- igs.sub %>%
+  dplyr::left_join(meta_sub %>% dplyr::select(SampleID, SampleID_site), by = "SampleID") %>%
+  dplyr::group_by(SampleID_site, Analyte) %>%
+  dplyr::summarise(log10_conc = mean(log10_conc, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_wider(names_from = Analyte, values_from = log10_conc)
+
+
+
+X_igs <- as.data.frame(igs.mat.collapsed)
+rownames(X_igs) <- X_igs$SampleID_site
+X_igs <- as.matrix(X_igs[ , -1, drop = FALSE])
+X_igs <- scale(X_igs)
+```
+
+```{r}
+common_ids <- Reduce(intersect, list(rownames(X_microbe), rownames(X_cytokine), rownames(X_igs)))
+
+# Build collapsed metadata
+meta_collapsed <- meta_sub %>%
+  dplyr::distinct(ID, Sample_Type, Biological_Sex, Age_Range, 
+                  Virus_pos, Bact_pos, Any_pos, SampleID_site) %>%
+  dplyr::filter(SampleID_site %in% common_ids) %>%
+  dplyr::arrange(match(SampleID_site, common_ids))
+
+meta_collapsed <- meta_collapsed[match(rownames(X_microbe), meta_collapsed$SampleID_site), ]
+
+```
+
+
+# check alignment
+```{r}
+
+X_microbe  <- X_microbe [common_ids, , drop = FALSE]
+X_cytokine <- X_cytokine[common_ids, , drop = FALSE]
+X_igs      <- X_igs     [common_ids, , drop = FALSE]
+
+meta_collapsed <- meta_sub %>%
+  dplyr::distinct(ID, Sample_Type, Biological_Sex, Age_Range, Virus_pos, Bact_pos, Any_pos, SampleID_site) %>%
+  dplyr::filter(SampleID_site %in% common_ids) %>%
+  dplyr::arrange(match(SampleID_site, common_ids))
+
+stopifnot(identical(rownames(X_microbe), rownames(X_cytokine)))
+stopifnot(identical(rownames(X_microbe), rownames(X_igs)))
+meta_collapsed <- meta_collapsed[match(rownames(X_microbe), meta_collapsed$SampleID_site), ]
+
+# now check again
+stopifnot(identical(meta_collapsed$SampleID_site, rownames(X_microbe)))
+# setdiff(rownames(X_microbe), meta_collapsed$SampleID_site)
+# setdiff(meta_collapsed$SampleID_site, rownames(X_microbe))
+```
+
+```{r}
+table(meta_collapsed$Sample_Type)
+table_input <- table(meta_collapsed$Sample_Type)
+table_input <- as.data.frame(table_input)
+
+clean_names <- function(x) {
+  x <- gsub("α", "alpha", x)
+  x <- gsub("γ", "gamma", x)
+  x <- gsub("λ", "lambda", x)
+  x <- gsub("[^A-Za-z0-9_]", "_", x)  # replace any other weird chars with underscore
+  x
+}
+
+colnames(X_cytokine) <- clean_names(colnames(X_cytokine))
+
+```
+
+
+# Build MOFA
+```{r}
+X_igs <- X_igs[,-4]
+views <- list(
+  Microbiome = t(X_microbe),   # features x samples
+  Cytokines  = t(X_cytokine),
+  Antibodies = t(X_igs)
+)
+
+mofa <- create_mofa(views)
+mofa
+
+do<- plot_data_overview(mofa)
+
+data_opts <- get_default_data_options(mofa)
+data_opts
+
+model_opts <- get_default_model_options(mofa)
+model_opts$spikeslab_weights <- TRUE
+
+#model_opts$num_factors <- 15
+
+model_opts
+# Training options
+train_opts <- get_default_training_options(mofa)
+train_opts
+train_opts$verbose <- TRUE     # prints progress
+
+ggsave(
+  filename = "mofa_overview.tiff",
+  plot     = do,
+  device   = "tiff",
+  dpi      = 300,
+  width    = 10,    # adjust as needed
+  height   = 7,
+  units    = "in",
+  compression = "lzw"
+)
+```
+
+
+```{r}
+MOFAobject <- prepare_mofa(mofa,
+  data_options = data_opts,
+  model_options = model_opts,
+  training_options = train_opts
+)
+
+slotNames(MOFAobject)
+names(MOFAobject@data)
+
+meta_mofa <-meta_collapsed %>% mutate(sample=SampleID_site)
+samples_metadata(MOFAobject) <- meta_mofa
+
+mofa_fit <- run_mofa(MOFAobject, use_basilisk = TRUE)
+
+# correlation between factors?
+#Not correlated
+plot_factor_cor(mofa_fit)
+
+```
+
+
+
+# Variance decomposition analysis
+The most important insight that MOFA generates is the **variance decomposition analysis**. This plot shows the percentage of variance explained by each factor across each data modality (and group, if provided). It summarises the sources of variation from a complex heterogeneous data set in a single figure.
+```{r}
+vp2<- plot_variance_explained(mofa_fit)+ theme(
+  axis.text.x = element_text(size = 16),
+  axis.text.y = element_text(size = 16),
+  legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16))
+
+vp2
+ggsave(
+  filename = "mofa_vp2.tiff",
+  plot     = vp2,
+  device   = "tiff",
+  dpi      = 300,
+  width    = 10,    # adjust as needed
+  height   = 7,
+  units    = "in",
+  compression = "lzw"
+)
+```
+
+```{r}
+# variance explained by factor × view
+var_exp <- get_variance_explained(mofa_fit)
+
+# total per factor across views
+
+# plot
+plot_variance_explained(mofa_fit)
+
+ggsave(
+  filename = "mofa_vp.tiff",
+  plot     = vp,
+  device   = "tiff",
+  dpi      = 300,
+  width    = 10,    # adjust as needed
+  height   = 7,
+  units    = "in",
+  compression = "lzw"
+)
+```
+
+
+
+
+
+# Total variance explained per view
+A reasonable question is whether the model is providing a good fit to the data. For this we can plot the total variance explained (using all factors). The resulting values will depend on the nature of the data set, the number of samples, the number of factors, etc. Some general guidelines:
+
+Noisy data sets with strong non-linearities will result in small amounts of variance explained (<10%).
+The higher the number of samples the smaller the total variance explained.
+The higher the number of factors, the higher the total variance explained.
+MOFA is a linear and sparse model. This is helpful to prevent overfitting, but it will never explain 100% of the variance, even if using a lot of Factors.
+
+In this data set, using only K=15 factors the model explains up to ~56.8% of the variation in the Total Antibodies concentrations and ~47% of the variation in the immune marker data. For microbiome that's ~24%.
+```{r}
+vp <- plot_variance_explained(mofa_fit, plot_total = T)[[2]]
+vp
+ggsave(
+  filename = "mofa_vp.tiff",
+  plot     = vp,
+  device   = "tiff",
+  dpi      = 300,
+  width    = 10,    # adjust as needed
+  height   = 7,
+  units    = "in",
+  compression = "lzw"
+)
+```
+
+# Association Analysis
+Factor 2 and to a lesser extent Factor 4 have an association with Sample Type.
+```{r}
+ex_data <- correlate_factors_with_covariates(
+  mofa_fit,
+  covariates = c("Sample_Type","Biological_Sex","Age_Range","Virus_pos","Bact_pos","Any_pos"),
+  plot = "log_pval",
+  return_data = TRUE
+)
+
+head(ex_data)
+
+# Step 2: pivot to long format
+ex_long <- as.data.frame(ex_data) %>%
+  rownames_to_column("Factor") %>%
+  pivot_longer(-Factor, names_to = "Covariate", values_to = "log_pval")
+
+ex_plot <- ggplot(ex_long, aes(x = Covariate, y = Factor, fill = log_pval)) +
+  geom_tile(color = "white") +
+  scale_fill_distiller(palette = "Greys", direction = 1) +
+  labs(x = NULL, y = NULL, fill = "-log10(p)") +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x  = element_text(size = 16, angle = 45, hjust = 1),
+    axis.text.y  = element_text(size = 16),
+    legend.text  = element_text(size = 16),
+    legend.title = element_text(size = 16, face = "bold")
+  )
+
+ex_plot
+# # Save the Factor 2 plot
+ggsave(
+  filename = "mofa_associations_analysis.tiff",
+  plot     = ex_plot,
+  device   = "tiff",
+  dpi      = 300,
+  width    = 10,    # adjust as needed
+  height   = 7,
+  units    = "in",
+  compression = "lzw"
+)
+
+
+```
+
+
+
+# Plot Factor Values
+**How do we interpret the factor values?**
+Each factor captures a different source of variability in the data. Mathematically, each Factor is defined by a linear combination of the input features. As the data is centered prior to running MOFA, each Factor ordinates cells along a one-dimensional axis that is centered at zero. Samples with different signs manifest opposite phenotypes along the inferred axis of variation, with higher absolute value indicating a stronger effect. Note that the interpretation of MOFA factors is analogous to the interpretation of the principal components in PCA.
+
+```{r}
+plot_factors(mofa_fit, factors=1, color_by="Sample_Type")
+plot_factors(mofa_fit, factors=2, color_by="Sample_Type")
+plot_factors(mofa_fit, factors=3, color_by="Sample_Type")
+
+
+```
+
+
+# Plot Feature Weights
+**How do we interpret the weights?**
+The weights provide a score for each feature on each factor. Features with no association with the corresponding factor are expected to have values close to zero, whereas features with strong association with the factor are expected to have large absolute values. The sign of the weights indicates the direction of the effect: a positive weights indicates that the feature has higher levels in the cells with positive factor values, and vice-versa.
+
+By looking at the variance explained plot, we saw that Factor 2 captures variation in all data modalities. We do see clear separation in microbiome especially but moderate in the other two as well.
+```{r}
+plot_weights(mofa_fit,
+ view = "Microbiome",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = T           # Scale weights from -1 to 1
+)
+
+
+plot_weights(mofa_fit,
+ view = "Cytokines",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = T           # Scale weights from -1 to 1
+)
+
+
+plot_weights(mofa_fit,
+ view = "Antibodies",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = T           # Scale weights from -1 to 1
+)
+```
+
+```{r}
+plot_top_weights(mofa_fit,
+ view = "Microbiome",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = T           # Scale weights from -1 to 1
+)
+
+plot_top_weights(mofa_fit,
+ view = "Cytokines",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = T           # Scale weights from -1 to 1
+)
+
+
+plot_top_weights(mofa_fit,
+ view = "Antibodies",
+ factor = 2,
+ nfeatures = 10,     # Top number of features to highlight
+ scale = T           # Scale weights from -1 to 1
+)
+```
+IFN_gamma has a positve weight. This means that samples with positive Factor 2 values have IFN_gamma whereas samples with negative Factor 2 values do not have the IFN_gamma. 
+
+```{r}
+# my palette
+custom_colors <- c(
+  "NPS"    = "#A2D2DF", 
+  "MTS"    = "bisque3",       
+  "MLF"    = "#FFBD73",
+  "OPS"    = "#BC7C7C",
+  "Saliva" = "#8ABFA3"
+)
+
+# factor plot
+p <- plot_factors(
+  mofa_fit, factors = c(2, 1), color_by = "Sample_Type",
+  dot_size = 2.5, show_missing = TRUE
+)
+
+ 
+# add our custom colors
+p <- p + scale_color_manual(values = custom_colors, name = "Sample Type",
+                     breaks = names(custom_colors), drop = FALSE) +
+  scale_fill_manual(values = custom_colors, name = "Sample Type",
+                    breaks = names(custom_colors), drop = FALSE) + theme(
+  axis.text.x = element_text(size = 16),
+  axis.text.y = element_text(size = 16),
+  legend.text = element_text(size = 16),axis.title   = element_text(size = 18, face = "bold"),
+    legend.title = element_text(size = 16))
+
+p
+
+ggsave("mofa_Factor2_vs_Factor1.tiff",
+       plot = p,
+       device = "tiff",
+       width = 10, height = 6, units = "in",
+       dpi = 600, compression = "lzw")
+```
+
+```{r}
+p <- plot_factors(
+  mofa_fit, factors = c(2, 1), color_by = "Sample_Type",
+  dot_size = 2.5, show_missing = TRUE
+)
+
+p +
+  scale_color_manual(values = custom_colors, name = "Sample Type",
+                     breaks = names(custom_colors), drop = FALSE) +
+  scale_fill_manual(values = custom_colors, name = "Sample Type",
+                    breaks = names(custom_colors), drop = FALSE)
+```
+
+
+
+
+```{r}
+#Extract weights for Factor2 in each view
+w_micro <- get_weights(mofa_fit, views = "Microbiome", factors = 2)[[1]]
+w_cyto  <- get_weights(mofa_fit, views = "Cytokines", factors = 2)[[1]]
+w_igs   <- get_weights(mofa_fit, views = "Antibodies", factors = 2)[[1]]
+
+# Convert to tibble
+w_micro <- tibble(feature = rownames(w_micro), value = w_micro[,1], factor = "Factor2")
+w_cyto  <- tibble(feature = rownames(w_cyto),  value = w_cyto[,1], factor = "Factor2")
+w_igs   <- tibble(feature = rownames(w_igs),   value = w_igs[,1], factor = "Factor2")
+
+# Top N by absolute weight
+topN <- 10
+w_micro <- w_micro %>% slice_max(order_by = abs(value), n = topN)
+w_cyto  <- w_cyto  %>% slice_max(order_by = abs(value), n = topN)
+w_igs   <- w_igs   %>% slice_max(order_by = abs(value), n = topN)
+
+# Combine
+W2 <- bind_rows(
+  mutate(w_micro, View = "Microbiome"),
+  mutate(w_cyto,  View = "Cytokines"),
+  mutate(w_igs,   View = "Antibodies")
+)
+
+# Plot
+domain_colors <- c(
+  "Microbiome" = "#3d3a37",   # dark grey
+  "Cytokines"  = "#7f0000",   # dark red
+  "Antibodies" = "#1f4e79"    # navy
+)
+
+ggplot(W2, aes(x = reorder(feature, value), y = value, fill = View)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = domain_colors, name = "Domain") +
+  labs(x = "", y = "Loading (Factor 2)", title = "Cross-modal features driving Factor 2") +
+  theme_minimal(base_size = 14)
+
+
+library(ggtext)
+
+# Keep feature for ordering, add feature_label for display
+W2 <- W2 %>%
+  mutate(feature_label = ifelse(View == "Microbiome",
+                                paste0("*", feature, "*"),
+                                feature))
+
+ggplot(W2, aes(x = reorder(feature, value), y = value, fill = View)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = domain_colors, name = "Domain") +
+  labs(x = "", y = "Loading (Factor 2)", title = "Cross-modal features driving Factor 2") +
+  theme_bw(base_size = 16) +
+  theme(axis.text.y = element_markdown(size = 16), axis.text.x = element_text(size = 16),
+  legend.text = element_text(size = 16),axis.title   = element_text(size = 16),
+    legend.title = element_text(size = 16),
+  plot.title  = element_text(size = 18, face="bold") )+
+  scale_x_discrete(labels = setNames(W2$feature_label, W2$feature))
+
+
+# Save the Factor 2 plot
+ggsave(
+  filename = "Factor2_top_featuresv2.tiff",
+  plot     = last_plot(),
+  device   = "tiff",
+  dpi      = 300,
+  width    = 10,    # adjust as needed
+  height   = 7,
+  units    = "in",
+  compression = "lzw"
+)
+```
+Positive values  -> oral sites (saliva or oropharynx) \n
+Negative values -> nasal sites (nasopharynx, MLF or MTS)
+
