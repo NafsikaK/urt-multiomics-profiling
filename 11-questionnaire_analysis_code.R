@@ -118,14 +118,7 @@ sign_Q1 <- data.frame(
     
     
   
-    combined_plot0 <- (quest1 / quest2) 
     
-    combined_plot0
-    
-    #Save my plot as .tiff:
-    ggsave(filename = "combined_questionnaire.tiff", plot = combined_plot0,
-           device = "tiff", height = 11, width = 17, units = "in",
-           dpi = 300)
     
 #Add sign.
 str(Q1_1)
