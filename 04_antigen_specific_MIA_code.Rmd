@@ -343,7 +343,7 @@ summary_table <- summary_table %>%
 gt_table <- summary_table %>%
   select(`Sample Type`,`Sampling Strategy`, target, Min_Concentration, Max_Concentration, Unit) %>%
   arrange(`Sampling Strategy`, target) %>%
-  gt(rowname_col = "Target") %>%
+  gt(rowname_col = "target") %>%
   tab_header(title = "Concentration Ranges per Sampling Method") %>%
   # Dynamically create row groups for each sampling method
   tab_row_group(label = md("**MLF**"), rows = `Sample Type` == "MLF") %>%
