@@ -25,7 +25,7 @@ packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2",
               "cowplot","coin","psych","cowplot",
               "phyloseq","microbiome","plyr","hrbrthemes",
               "RColorBrewer","readr", "decontam", "microbiomeutilities",
-              "DECIPHER", "ape","phangorn", "tibble","utils","MOFA2","microViz",
+               "ape","phangorn", "tibble","utils","MOFA2","microViz",
               "vegan","mixOmics","data.table")
 
 load_packages(packages)
@@ -382,7 +382,7 @@ clean_names <- function(x) {
   x <- gsub("α", "alpha", x)
   x <- gsub("γ", "gamma", x)
   x <- gsub("λ", "lambda", x)
-  x <- gsub("[^A-Za-z0-9_]", "_", x)  # replace any other weird chars with underscore
+  x <- gsub("[^A-Za-z0-9_]", "_", x)  
   x
 }
 
@@ -396,7 +396,6 @@ colnames(X_cytokine) <- clean_names(colnames(X_cytokine))
 
 ## collapse microbiome 
 ```{r}
-library(compositions)
 library(compositions)
 library(dplyr)
 
@@ -479,6 +478,7 @@ dat_rda <- X_cytokine_df %>%
   left_join(meta_collapsed, by="SampleID_site") 
 dim(dat_rda)
 dat_rda <- dat_rda %>% filter(!is.na(IgM))
+dat_rda <- dat_rda[!is.na(dat_rda$Any_pos), ]
 
 
 
@@ -526,7 +526,6 @@ set.seed(123)
 
 #writexl::write_xlsx(permanova_df, "RDA_PERMANOVA_result.xlsx")
 # ---- RDA: all domains ~ Sample_Type | covariates ----
-dat_rda <- dat_rda[!is.na(dat_rda$Any_pos), ]
 mod_rda <- rda(X_features ~ Sample_Type + Condition(ID + Biological_Sex + Age_Range + Any_pos),
                data = dat_rda)
 
