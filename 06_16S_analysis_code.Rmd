@@ -28,7 +28,7 @@ packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2",
               "cowplot","coin","psych","cowplot",
               "phyloseq","microbiome","plyr","hrbrthemes",
               "RColorBrewer","readr", "decontam", "microbiomeutilities",
-              "DECIPHER", "ape","phangorn", "tibble","utils")
+              "phangorn", "tibble","utils")
 
 load_packages(packages)
 library(microViz)
@@ -283,8 +283,9 @@ region_colors <- c(`Nasal Cavity` = "#A2D2DF", `Oral Cavity`="#BC7C7C")
 
 # Beta-diversity: Regions of the URT
 ```{r}
-set.seed(202)
+library(pairwiseAdonis)
 
+set.seed(202)
 #Calculate relative abundances
 ps.rel.prof2 <- prune_taxa(taxa_sums(ps.rel.prof)>0, ps.rel.prof)
 ps.rel.prof.comp <- microbiome::transform(ps.rel.prof2, "compositional")
@@ -1041,8 +1042,7 @@ p1
 ps.mlf.prof.obs <- ps.nasal %>% ps_filter(Sample_Type =="MLF")
 table(as.data.frame(sample_data(ps.mlf.prof.obs))$Nostril)
 #We need to filter out the extra timepoints
-ps.mlf.prof.obs <- ps.mlf.prof.obs %>% ps_filter(Timepoint == "T1" | 
-                                           is.na(Timepoint))
+ps.mlf.prof.obs <- ps.mlf.prof.obs
 # Convert to data frame if needed
 mlf_df <- as.data.frame(sample_data(ps.mlf.prof.obs))
 
@@ -3064,8 +3064,8 @@ top10_op
 ```{r, fig.width=13, fig.height=10}
 # Convert the phyloseq object to a data frame
 
-# Define your top 5 genera
-# top_genera <- c("Streptococcus", "Rothia", "Haemophilus", "Leptotrichia", "Neisseria","Gemella", "Gemella", "Fusobacterium", "Porphyromonas", "Granulicatella", "")
+# Define top genera
+
 # Convert the phyloseq object to a data frame
 df <- psmelt(ps.rel.oral)
 
@@ -3263,7 +3263,6 @@ row2 <- arrangeGrob(oral_label, top_plot_combined, ncol = 2, widths = c(0.1, 0.9
 
 # Combine rows into one figure
 combined_plot_g <- grid.arrange(row1, row2, nrow = 2)
-# combined_plot_g <- grid.arrange(top5_plot_nasal_g, top5_plot_oral_g, nrow = 2)
 ggsave(
   filename    = "Top_6_Genera_Niches.tiff",
   plot        = combined_plot_g,
