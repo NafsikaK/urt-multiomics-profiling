@@ -350,9 +350,9 @@ ratio_nostril_plot
 
 From the analysis above, we conclude that it seems that there are **no significant differences** between samples taken from the left or the right nostril with the MLF and MTS sample types. Some cytokines (e.g. IFN-γ, IFN-α2) show outliers, which could be because the IFNs were overall very low in concnetration (possibly, close to the limit of detection of the assay, leading to noise or error measurements). Therefore, for the following analysis, we take the mean of the nostrils' concentration (respectively for each sample type).
 
-# Follow - ups
+# Reshape Data
 ```{r fp, warning=FALSE, fig.width=10, fig.height=8}
-Mean_Nostrils_Df <- after_min_imp %>%
+Mean_Nostrils_Df <- df %>%
   group_by(ID, Sample_Type, Analytes) %>% 
   # Calculate the mean for nostrils (Left and Right) for professional samples only
   mutate(mean_concentration = ifelse(Sample_Type %in% c("MLF", "Mid-turbinate swab") & !is.na(Nostril), 
@@ -367,7 +367,7 @@ Mean_Nostrils_Df <- after_min_imp %>%
   mutate(log_10_mean = log10(mean_concentration))
 
   
-  #Followups:
+  #Followups: 2 participants were sampled at two timepoints. These data were not included in the manuscript due to low sample size.:
   fp <- Mean_Nostrils_Df %>% 
   filter((Follow_up == "Participant 1" | Follow_up == "Participant 2"))
 fp <- fp %>%
@@ -480,7 +480,7 @@ boxplot_samples_professional <- ggplot(my_dataframe_prof,
   geom_line(aes(group = ID), alpha = 0.1) +
   facet_wrap(~Analytes) +
 
-  # ↑ set a bigger base size here
+  # set a bigger base size here
   theme_bw(base_size = 25) +  
 
   # then fine‐tune specific text sizes
@@ -532,9 +532,9 @@ custom_colors_abbrv <- c(NPS = "#5BA4C7",
 # Make regions instead of sample types
 my_df_prof <- my_dataframe_prof %>%
   mutate(Anatomical_Site = case_when(
-    Sample_Type == "Nasopharyngeal swab" ~ "Nasopharynx",
-    Sample_Type == "Oropharyngeal swab" ~ "Oropharynx",
-    Sample_Type == "Mid-turbinate swab" ~ "Mid-Turbinate Nasal Mucosa",
+    Sample_Type == "NPS" ~ "Nasopharynx",
+    Sample_Type == "OPS" ~ "Oropharynx",
+    Sample_Type == "MTS" ~ "Mid-Turbinate Nasal Mucosa",
     Sample_Type == "MLF" ~ "Nasal Mucosa",
     Sample_Type == "Saliva" ~ "Oral Cavity",
     TRUE ~ NA_character_  # For any other cases that don't match
@@ -1217,7 +1217,7 @@ adjusted_df <- fixed_effects_df %>%
 
 # Filter out reference rows if needed
 GMRs <- adjusted_df %>%
-  filter(Sample_Type != "Nasopharyngeal swab") %>%
+  filter(Sample_Type != "NPS") %>%
   select(Sample_Type, Analytes, GMR, GMR_Lower, GMR_Upper, `p-value`)
 
 # View the resulting data frame
