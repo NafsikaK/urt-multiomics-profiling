@@ -626,7 +626,7 @@ wide_data_nostril <- mlf_prof %>% select(Nostril,ID,log10.new,Analyte) %>%
 
 # We make an empty list to store the results of the Wilcoxon paired test 
 MLF_wilcoxon_res <- list()
-analytes <- unique(my_df_nofollowups$Analyte)
+analytes <- unique(mydf2$Analyte)
 #Define significance:
 significance <- function(p){
   if(p<0.001){
