@@ -350,58 +350,7 @@ ratio_nostril_plot
 
 From the analysis above, we conclude that it seems that there are **no significant differences** between samples taken from the left or the right nostril with the MLF and MTS sample types. Some cytokines (e.g. IFN-γ, IFN-α2) show outliers, which could be because the IFNs were overall very low in concetration (possibly, close to the limit of detection of the assay, leading to noise or error measurements). Therefore, for the following analysis, we take the mean of the nostrils' concentration (respectively for each sample type).
 
-# Reshape Data
-```{r fp, warning=FALSE, fig.width=10, fig.height=8}
-Mean_Nostrils_Df <- df %>%
-  group_by(ID, Sample_Type, Analytes) %>% 
-  # Calculate the mean for nostrils (Left and Right) for professional samples only
-  mutate(mean_concentration = ifelse(Sample_Type %in% c("MLF", "Mid-turbinate swab") & !is.na(Nostril), 
-                                     mean(concentration.est, na.rm = TRUE),  # Mean for Left/Right nostrils
-                                     concentration.est)) %>%  # Keep other samples as they are
-  ungroup() %>%
-  
-  # Remove the duplicated rows by keeping one row for nostrils (Left/Right) per group
-  distinct(ID, Sample_Type, Analytes,Sampling_Strategy, .keep_all = TRUE) %>% 
-  
-  # Apply the log transformation after handling duplicates
-  mutate(log_10_mean = log10(mean_concentration))
 
-  
-  #Followups: 2 participants were sampled at two timepoints. These data were not included in the manuscript due to low sample size.:
-  fp <- Mean_Nostrils_Df %>% 
-  filter((Follow_up == "Participant 1" | Follow_up == "Participant 2"))
-fp <- fp %>%
-  mutate(Followup = paste(Follow_up, Timepoint, sep = "_"))
-
-#Scatterplot for the followups 
-# ggplot(fp, aes(x=Analytes, y=log10(concentration.est), color=Sample_Type))+
-#   facet_wrap(~Followup)+
-#   geom_point(position = position_dodge(width = 0.75))+
-#   theme_bw() +
-#   theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
-
-fp_p1 <- fp %>% filter(Follow_up == "Participant 1")
-fp_p2 <- fp %>% filter(Follow_up == "Participant 2")
-
-#Line plot for the followups
-line_plot <- ggplot(fp_p1, aes(x = Sample_Type, y = log10(mean_concentration), color = Timepoint, group = Timepoint)) +
-  geom_line() +
-  geom_point() +
-  facet_wrap(~ Analytes, scales = "free_y") +  # Facet by Participant and Analyte
-  labs(x = "Sample Type", y = "Concentration (log10)", color = "Timepoint") +
-  theme_minimal()+ labs (title="Participant 1")+
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
-line_plot
-
-fp_p2_plot<- ggplot(fp_p2, aes(x = Sample_Type, y = log10(mean_concentration), color = Timepoint, group = Timepoint)) +
-  geom_line() +
-  geom_point() +
-  facet_wrap(~ Analytes, scales = "free_y") +  # Facet by Participant and Analyte
-  labs(x = "Sample Type", y = "Concentration (log10)", color = "Timepoint") +
-  theme_minimal()+ labs (title="Participant 2")+
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
-fp_p2_plot
-```
 
 
 # Define colors for Sample Types
