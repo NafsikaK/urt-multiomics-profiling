@@ -348,7 +348,7 @@ ratio_nostril_plot
 # )
 ```
 
-From the analysis above, we conclude that it seems that there are **no significant differences** between samples taken from the left or the right nostril with the MLF and MTS sample types. Some cytokines (e.g. IFN-γ, IFN-α2) show outliers, which could be because the IFNs were overall very low in concnetration (possibly, close to the limit of detection of the assay, leading to noise or error measurements). Therefore, for the following analysis, we take the mean of the nostrils' concentration (respectively for each sample type).
+From the analysis above, we conclude that it seems that there are **no significant differences** between samples taken from the left or the right nostril with the MLF and MTS sample types. Some cytokines (e.g. IFN-γ, IFN-α2) show outliers, which could be because the IFNs were overall very low in concetration (possibly, close to the limit of detection of the assay, leading to noise or error measurements). Therefore, for the following analysis, we take the mean of the nostrils' concentration (respectively for each sample type).
 
 # Reshape Data
 ```{r fp, warning=FALSE, fig.width=10, fig.height=8}
@@ -1252,9 +1252,9 @@ custom_colors <- c("NPS" = "#A2D2DF",
 # Modify data: Set NPS ratio to 1
 GMRs_with_NP <- GMRs_with_NP %>%
   mutate(
-    GMR = ifelse(Sample_Type == "Nasopharyngeal swab", 1, GMR),  # Set estimate to 1 for NPS
-    GMR_Lower = ifelse(Sample_Type == "Nasopharyngeal swab", 1, GMR_Lower),   # Set conf.low to 1 for NPS
-    GMR_Upper = ifelse(Sample_Type == "Nasopharyngeal swab", 1, GMR_Upper)  # Set conf.high to 1 for NPS
+    GMR = ifelse(Sample_Type == "NPS", 1, GMR),  # Set estimate to 1 for NPS
+    GMR_Lower = ifelse(Sample_Type == "NPS", 1, GMR_Lower),   # Set conf.low to 1 for NPS
+    GMR_Upper = ifelse(Sample_Type == "NPS", 1, GMR_Upper)  # Set conf.high to 1 for NPS
   )
 
 
