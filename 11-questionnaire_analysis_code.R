@@ -23,10 +23,10 @@ library(FSA)
 library(boot)
 getwd()
 
-# Load the .csv file containing the data 
-library(readr)
-Q <- read_delim("11-questionnaire_data.csv", 
-                                                              delim = ";", escape_double = FALSE, trim_ws = TRUE)
+# Load the file containing the data 
+
+library(readxl)
+Q <-  read_excel("11-questionnaire_data.xlsx")
 #Remove missing (NA) values:
 Q1 <- na.omit(Q)
 #with the following function you can count distinct values (even if they are characters)
@@ -46,7 +46,7 @@ Q1_1$Likert_Scale <- factor(Q1_1$Likert_Scale)
 # Group by Sample_Type and Likert_Scale, then count occurrences
 grouped_data <- Q1_1 %>%
   group_by(Sample_Type, Likert_Scale) %>%
-  summarise(n = n(), .groups = 'drop')  # Adding .groups = 'drop' to avoid grouped result warning
+  dplyr::summarise(n = n(), .groups = 'drop')  # Adding .groups = 'drop' to avoid grouped result warning
 
 # Calculate the ratio
 library(scales)
@@ -136,7 +136,7 @@ str(percentData_1)
   # Group by Sample_Type and Likert_Scale, then count occurrences
   grouped_data2 <- Q2 %>%
     group_by(Sample_Type, Likert_Scale) %>%
-    summarise(n = n(), .groups = 'drop')  # Adding .groups = 'drop' to avoid grouped result warning
+    dplyr::summarise(n = n(), .groups = 'drop')  # Adding .groups = 'drop' to avoid grouped result warning
   
   # Calculate the ratio
   percentData_2 <- grouped_data2 %>%
@@ -233,7 +233,3 @@ Q2_Post_Hoc <- Q2 %>%
   ) 
 
 print(Q2_Post_Hoc)
-
-
-
-
