@@ -32,6 +32,7 @@ packages <- c("purrr", "dplyr", "tidyr", "knitr", "magrittr", "reshape2",
               "vegan","mixOmics","data.table")
 
 load_packages(packages)
+library(MOFA2)
 
 ```
 
