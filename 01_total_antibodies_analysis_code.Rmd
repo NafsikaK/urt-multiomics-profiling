@@ -36,7 +36,7 @@ getwd()
 
 # Import total antibody data:
 ```{r}
-mydf <- read_excel("datasets_final/01-Luminex_Total_Abs_Data.xlsx", 
+mydf <- read_excel("01-Luminex_Total_Abs_Data.xlsx", 
     col_types = c("text", "text", "numeric", 
         "numeric", "numeric", "numeric", 
         "numeric", "text", "text", "text", 
